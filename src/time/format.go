@@ -360,6 +360,38 @@ func lookup(tab []string, val string) (int, string, error) {
 	return -1, val, errBad
 }
 
+const smallsString = "00010203040506070809" +
+	"10111213141516171819" +
+	"20212223242526272829" +
+	"30313233343536373839" +
+	"40414243444546474849" +
+	"50515253545556575859" +
+	"60616263646566676869" +
+	"70717273747576777879" +
+	"80818283848586878889" +
+	"90919293949596979899"
+
+const digits = "0123456789"
+
+func appendInt2(b []byte, x int) []byte {
+	const nSmalls = 100
+
+	// WARN
+	// if x >= nSmalls {
+	// 	return appendInt(b, x, 2)
+	// }
+
+	u := uint(x)
+	if x < 0 {
+		b = append(b, '-')
+		u = uint(-x)
+	}
+	if u < 10 {
+		return append(b, '0', byte('0'+u))
+	}
+	return append(b, smallsString[u*2:u*2+2]...)
+}
+
 // appendInt appends the decimal form of x to b and returns the result.
 // If the decimal form (excluding sign) is shorter than width, the result is padded with leading 0's.
 // Duplicates functionality in strconv, but avoids dependency.
@@ -671,6 +703,61 @@ func (t Time) AppendFormat(b []byte, layout string) []byte {
 		case stdFracSecond0, stdFracSecond9:
 			b = formatNano(b, uint(t.Nanosecond()), std>>stdArgShift, std&stdMask == stdFracSecond9)
 		}
+	}
+	return b
+}
+
+func (t Time) formatRFC3339Nano(b []byte, quote bool) []byte {
+	const std = stdISO8601ColonTZ // WARN
+
+	var (
+		_, offset, abs      = t.locabs()
+		year, month, day, _ = absDate(abs, true)
+		hour, min, sec      = absClock(abs)
+	)
+
+	if quote {
+		b = append(b, '"')
+	}
+	b = appendInt(b, year, 4)
+	b = append(b, '-')
+	b = appendInt(b, int(month), 2)
+	b = append(b, '-')
+	// b = appendInt(b, day, 2)
+	b = appendInt2(b, day)
+	b = append(b, 'T')
+	// b = appendInt(b, hour, 2)
+	b = appendInt2(b, hour)
+	b = append(b, ':')
+	// b = appendInt(b, min, 2)
+	b = appendInt2(b, min)
+	b = append(b, ':')
+	// b = appendInt(b, sec, 2)
+	b = appendInt2(b, sec)
+
+	b = formatNano(b, uint(t.Nanosecond()), 9, true)
+
+	if offset == 0 {
+		b = append(b, 'Z')
+	} else {
+		zone := offset / 60 // convert to minutes
+		absoffset := offset
+		if zone < 0 {
+			b = append(b, '-')
+			zone = -zone
+			absoffset = -absoffset
+		} else {
+			b = append(b, '+')
+		}
+		// b = appendInt(b, zone/60, 2)
+		b = appendInt2(b, zone/60)
+		b = append(b, ':')
+		// b = appendInt(b, zone%60, 2)
+		b = appendInt2(b, zone%60)
+	}
+
+	if quote {
+		b = append(b, '"')
 	}
 	return b
 }

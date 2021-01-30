@@ -1317,6 +1317,24 @@ func BenchmarkFormatNow(b *testing.B) {
 	}
 }
 
+func BenchmarkFormatNow_RFC3339Nano(b *testing.B) {
+	// Like BenchmarkFormat, but easier, because the time zone
+	// lookup cache is optimized for the present.
+	t := Now()
+	for i := 0; i < b.N; i++ {
+		t.Format(RFC3339Nano)
+	}
+}
+
+func BenchmarkFormatNow_RFC3339Nano_UTC(b *testing.B) {
+	// Like BenchmarkFormat, but easier, because the time zone
+	// lookup cache is optimized for the present.
+	t := Now().UTC()
+	for i := 0; i < b.N; i++ {
+		t.Format(RFC3339Nano)
+	}
+}
+
 func BenchmarkMarshalJSON(b *testing.B) {
 	t := Now()
 	for i := 0; i < b.N; i++ {
