@@ -118,6 +118,20 @@ var formatTests = []FormatTest{
 	{"YearDay", "Jan  2 002 __2 2", "Feb  4 035  35 4"},
 }
 
+func TestFormat_RFC3339Nano(t *testing.T) {
+	// The numeric time represents Thu Feb  4 21:00:57.012345600 PST 2009
+	time := Unix(0, 1233810057012345600)
+	tests := []FormatTest{
+		{"RFC3339Nano", RFC3339Nano, "2009-02-04T21:00:57.0123456-08:00"},
+	}
+	for _, test := range tests {
+		result := time.Format(test.format)
+		if result != test.result {
+			t.Errorf("%s expected %q got %q", test.name, test.result, result)
+		}
+	}
+}
+
 func TestFormat(t *testing.T) {
 	// The numeric time represents Thu Feb  4 21:00:57.012345600 PST 2009
 	time := Unix(0, 1233810057012345600)

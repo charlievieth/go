@@ -4,7 +4,9 @@
 
 package time
 
-import "errors"
+import (
+	"errors"
+)
 
 // These are predefined layouts for use in Time.Format and time.Parse.
 // The reference time used in the layouts is the specific time:
@@ -371,38 +373,35 @@ const smallsString = "00010203040506070809" +
 	"80818283848586878889" +
 	"90919293949596979899"
 
-const digits = "0123456789"
+// func appendInt2(b []byte, x int) []byte {
+// 	u := uint(x)
+// 	if x < 0 {
+// 		b = append(b, '-')
+// 		u = uint(-x)
+// 	}
+// 	if u < 10 {
+// 		return append(b, '0', byte('0'+u))
+// 	}
+// 	return append(b, smallsString[u*2:u*2+2]...)
+// }
 
-func appendInt2(b []byte, x int) []byte {
-	const nSmalls = 100
-
-	// WARN
-	// if x >= nSmalls {
-	// 	return appendInt(b, x, 2)
-	// }
-
-	u := uint(x)
-	if x < 0 {
-		b = append(b, '-')
-		u = uint(-x)
+func appendIntSmall(b []byte, x int, pad bool) []byte {
+	if x < 10 {
+		if pad {
+			b = append(b, '0')
+		}
+		return append(b, byte('0'+x))
 	}
-	if u < 10 {
-		return append(b, '0', byte('0'+u))
-	}
-	return append(b, smallsString[u*2:u*2+2]...)
+	x *= 2
+	return append(b, smallsString[x:x+2]...)
 }
 
-// appendInt appends the decimal form of x to b and returns the result.
-// If the decimal form (excluding sign) is shorter than width, the result is padded with leading 0's.
-// Duplicates functionality in strconv, but avoids dependency.
-func appendInt(b []byte, x int, width int) []byte {
+func appendIntLarge(b []byte, x int, width int) []byte {
 	u := uint(x)
 	if x < 0 {
 		b = append(b, '-')
 		u = uint(-x)
 	}
-
-	// Assemble decimal in reverse order.
 	var buf [20]byte
 	i := len(buf)
 	for u >= 10 {
@@ -420,6 +419,16 @@ func appendInt(b []byte, x int, width int) []byte {
 	}
 
 	return append(b, buf[i:]...)
+}
+
+// appendInt appends the decimal form of x to b and returns the result.
+// If the decimal form (excluding sign) is shorter than width, the result is padded with leading 0's.
+// Duplicates functionality in strconv, but avoids dependency.
+func appendInt(b []byte, x int, width int) []byte {
+	if uint(x) < 100 && width <= 2 {
+		return appendIntSmall(b, x, width == 2)
+	}
+	return appendIntLarge(b, x, width)
 }
 
 // Never printed, just needs to be non-nil for return by atoi.
@@ -538,9 +547,27 @@ func (t Time) Format(layout string) string {
 	return string(b)
 }
 
+// RFC3339Nano
+// 	stdLongYear
+// 	stdZeroMonth
+// 	stdZeroDay
+// 	stdHour
+// 	stdZeroMinute
+// 	stdZeroSecond
+//
+// 	stdFracSecond0, stdFracSecond9
+// 	stdISO8601TZ, stdISO8601ColonTZ, stdISO8601SecondsTZ, stdISO8601ShortTZ, stdISO8601ColonSecondsTZ, stdNumTZ, stdNumColonTZ, stdNumSecondsTz, stdNumShortTZ, stdNumColonSecondsTZ
+
+const useAppendRFC3339Nano = true
+
 // AppendFormat is like Format but appends the textual
 // representation to b and returns the extended buffer.
 func (t Time) AppendFormat(b []byte, layout string) []byte {
+	if useAppendRFC3339Nano {
+		if layout == RFC3339Nano {
+			return t.formatRFC3339Nano(b, false)
+		}
+	}
 	var (
 		name, offset, abs = t.locabs()
 
@@ -701,6 +728,10 @@ func (t Time) AppendFormat(b []byte, layout string) []byte {
 			b = appendInt(b, zone/60, 2)
 			b = appendInt(b, zone%60, 2)
 		case stdFracSecond0, stdFracSecond9:
+			if std&stdMask == stdFracSecond0 {
+			} else if std&stdMask == stdFracSecond9 {
+			} else {
+			}
 			b = formatNano(b, uint(t.Nanosecond()), std>>stdArgShift, std&stdMask == stdFracSecond9)
 		}
 	}
@@ -723,17 +754,13 @@ func (t Time) formatRFC3339Nano(b []byte, quote bool) []byte {
 	b = append(b, '-')
 	b = appendInt(b, int(month), 2)
 	b = append(b, '-')
-	// b = appendInt(b, day, 2)
-	b = appendInt2(b, day)
+	b = appendInt(b, day, 2)
 	b = append(b, 'T')
-	// b = appendInt(b, hour, 2)
-	b = appendInt2(b, hour)
+	b = appendInt(b, hour, 2)
 	b = append(b, ':')
-	// b = appendInt(b, min, 2)
-	b = appendInt2(b, min)
+	b = appendInt(b, min, 2)
 	b = append(b, ':')
-	// b = appendInt(b, sec, 2)
-	b = appendInt2(b, sec)
+	b = appendInt(b, sec, 2)
 
 	b = formatNano(b, uint(t.Nanosecond()), 9, true)
 
@@ -749,11 +776,9 @@ func (t Time) formatRFC3339Nano(b []byte, quote bool) []byte {
 		} else {
 			b = append(b, '+')
 		}
-		// b = appendInt(b, zone/60, 2)
-		b = appendInt2(b, zone/60)
+		b = appendInt(b, zone/60, 2)
 		b = append(b, ':')
-		// b = appendInt(b, zone%60, 2)
-		b = appendInt2(b, zone%60)
+		b = appendInt(b, zone%60, 2)
 	}
 
 	if quote {
