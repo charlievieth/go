@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"internal/buildcfg"
@@ -81,18 +82,36 @@ func init() {
 		test.HelpTestflag,
 		test.HelpTestfunc,
 		modget.HelpVCS,
+
+		// WARN
+		base.CmdCmds,
 	}
 }
 
 func main() {
 	_ = go11tag
 	flag.Usage = base.Usage
+
+	// WARN
+	base.CmdCmds.Run(nil, nil, nil)
+	return
+
 	flag.Parse()
 	log.SetFlags(0)
 
 	args := flag.Args()
 	if len(args) < 1 {
 		base.Usage()
+	}
+
+	if args[0] == "cmds" {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "    ")
+		if err := enc.Encode(base.Go); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(2)
+		}
+		return
 	}
 
 	if args[0] == "get" || args[0] == "help" {

@@ -8,11 +8,13 @@ package base
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	exec "internal/execabs"
 	"log"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -48,6 +50,94 @@ type Command struct {
 	// The order here is the order in which they are printed by 'go help'.
 	// Note that subcommands are in general best avoided.
 	Commands []*Command
+}
+
+type command struct {
+	Name        string
+	LongName    string
+	UsageLine   string
+	Short       string
+	Long        string
+	Flags       []*goflag
+	CustomFlags bool
+	Commands    []*command
+}
+
+func newCommand(c *Command) *command {
+	var flags []*goflag
+	c.Flag.VisitAll(func(ff *flag.Flag) {
+		flags = append(flags, newGoFlag(ff))
+	})
+	x := &command{
+		Name:        c.Name(),
+		LongName:    c.LongName(),
+		UsageLine:   c.UsageLine,
+		Short:       c.Short,
+		Long:        c.Long,
+		Flags:       flags,
+		CustomFlags: c.CustomFlags,
+		// Commands:    c.Commands,
+	}
+	for _, child := range c.Commands {
+		x.Commands = append(x.Commands, newCommand(child))
+	}
+	return x
+}
+
+type flagValue struct {
+	Type   string
+	String string
+}
+
+type goflag struct {
+	Name     string    // name as it appears on command line
+	Usage    string    // help message
+	Value    flagValue // value as set
+	DefValue string    // default value (as text); for usage message
+}
+
+func newGoFlag(f *flag.Flag) *goflag {
+	return &goflag{
+		Name:  f.Name,
+		Usage: f.Usage,
+		Value: flagValue{
+			Type:   reflect.TypeOf(f.Value).String(),
+			String: fmt.Sprintf("%v", f.Value),
+		},
+		DefValue: f.DefValue,
+	}
+}
+
+func (c Command) MarshalJSON() ([]byte, error) {
+	// var flags []*goflag
+	// c.Flag.VisitAll(func(ff *flag.Flag) {
+	// 	flags = append(flags, newGoFlag(ff))
+	// })
+	// x := command{
+	// 	Name:        c.Name(),
+	// 	LongName:    c.LongName(),
+	// 	UsageLine:   c.UsageLine,
+	// 	Short:       c.Short,
+	// 	Long:        c.Long,
+	// 	Flags:       flags,
+	// 	CustomFlags: c.CustomFlags,
+	// 	Commands:    c.commands,
+	// }
+	return json.Marshal(newCommand(&c))
+}
+
+var CmdCmds = &Command{
+	Run: func(ctx context.Context, cmd *Command, args []string) {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "    ")
+		if err := enc.Encode(Go); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(2)
+		}
+		return
+	},
+	UsageLine: "go cmds",
+	Short:     "dump go commands",
 }
 
 var Go = &Command{
