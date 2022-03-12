@@ -18,7 +18,6 @@ import (
 	"internal/goversion"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"os"
 	pathpkg "path"
 	"path/filepath"
@@ -101,6 +100,9 @@ type Context struct {
 	// If HasSubdir is nil, Import uses an implementation built on
 	// filepath.EvalSymlinks.
 	HasSubdir func(root, dir string) (rel string, ok bool)
+
+	// TODO: add a fs.DirEntry version of ReadDir so that users of
+	// this opt-in feature don't have to suffer a performance penalty.
 
 	// ReadDir returns a slice of fs.FileInfo, sorted by Name,
 	// describing the content of the named directory.
@@ -186,13 +188,20 @@ func hasSubdir(root, dir string) (rel string, ok bool) {
 	return filepath.ToSlash(dir[len(root):]), true
 }
 
-// readDir calls ctxt.ReadDir (if not nil) or else ioutil.ReadDir.
-func (ctxt *Context) readDir(path string) ([]fs.FileInfo, error) {
+// readDir calls ctxt.ReadDir (if not nil) or else os.ReadDir.
+func (ctxt *Context) readDir(path string) ([]fs.DirEntry, error) {
 	if f := ctxt.ReadDir; f != nil {
-		return f(path)
+		fis, err := f(path)
+		if err != nil {
+			return nil, err
+		}
+		des := make([]fs.DirEntry, len(fis))
+		for i, fi := range fis {
+			des[i] = fs.FileInfoToDirEntry(fi)
+		}
+		return des, nil
 	}
-	// TODO: use os.ReadDir
-	return ioutil.ReadDir(path)
+	return os.ReadDir(path)
 }
 
 // openFile calls ctxt.OpenFile (if not nil) or else os.Open.
@@ -835,7 +844,7 @@ Found:
 		if d.IsDir() {
 			continue
 		}
-		if d.Mode()&fs.ModeSymlink != 0 {
+		if d.Type() == fs.ModeSymlink {
 			if ctxt.isDir(ctxt.joinPath(p.Dir, d.Name())) {
 				// Symlinks to directories are not source files.
 				continue
