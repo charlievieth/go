@@ -147,43 +147,154 @@ func (ctxt *Context) isDir(path string) bool {
 
 // hasSubdir calls ctxt.HasSubdir (if not nil) or else uses
 // the local file system to answer the question.
-func (ctxt *Context) hasSubdir(root, dir string) (rel string, ok bool) {
+func (ctxt *Context) hasSubdir(gopath []string, root, dir string) (rel string, ok bool) {
 	if f := ctxt.HasSubdir; f != nil {
 		return f(root, dir)
 	}
 
-	// Try using paths we received.
+	// TODO:
+	// 	1. "root" is always clean and "dir" is clean if not absolute
+	// 	   we should ensure that "dir" is always clean, since that simplifies
+	// 	   things
+	// 	2. pass in GOPATHS (if we have it)
+	// 	3. store/cache the result of stat'ing GOROOT and GOPATH(s)
+
+	// Try using paths we received before cleaning.
+	if rel, ok = hasSubdir(root, dir); ok {
+		// Remove any leading slashes because filepath.Clean
+		// will not remove them for us.
+		rel = strings.TrimLeft(rel, "/")
+		if rel != "" {
+			return filepath.ToSlash(filepath.Clean(rel)), true
+		}
+		return "", false
+	}
+
+	// WARN: cleaning all paths first takes 365ns/op vs 37ns/op
+
+	// WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN
+	// WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN
+	goroot := ctxt.GOROOT
+	if (root == goroot || isSubdir(goroot, root)) && ctxt.inGopath(gopath, dir) ||
+		(dir == goroot || isSubdir(goroot, dir)) && ctxt.inGopath(gopath, root) {
+		return "", false
+	}
+
+	// TODO: we probably don't need this since we're passed clean paths
+	// Clean paths and check again.
+	root = filepath.Clean(root)
+	dir = filepath.Clean(dir)
 	if rel, ok = hasSubdir(root, dir); ok {
 		return
 	}
+
+	// TODO: improve and address below comments
+	//
+	// If either root or dir is GOROOT or a subdirectory of it and the other
+	// is a subdirectory of GOPATH we can assume the two do not overlap and
+	// skip the expensive call to filepath.EvalSymlinks.
+	//
+	// WARN: this breaks if we allow a pkg defined in the GOPATH to be
+	// symlinked into GOROOT and be imported both as a stdlib pkg and as
+	// a GOPATH package (the GOROOT vendor directory probably allows this).
+	//
+	// NOTE: This should not be an issue because a package cannot exist in
+	// both.
+	goroot = filepath.Clean(goroot)
+
+	// WARN WARN WARN
+	if gopath == nil {
+		gopath = ctxt.gopath()
+	}
+
+	if (root == goroot || isSubdir(goroot, root)) && ctxt.inGopath(gopath, dir) ||
+		(dir == goroot || isSubdir(goroot, dir)) && ctxt.inGopath(gopath, root) {
+		return "", false
+	}
+
+	// WARN: This might be broken if root is a symlink (try reversing the
+	// test we have for issue #14054)
+
+	// TODO: improve comment
+	//
+	// It is unlikely that dir is a subdirectory of root, so optimize
+	// for that case using os.Stat and os.SameFile, before attempting
+	// the much more expensive call to filepath.EvalSymlinks.
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return "", false
+	}
+	path := dir
+	for {
+		fi, err := os.Lstat(path)
+		if err != nil {
+			return "", false
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			// Issue #14054
+			break // symlink in dir
+		}
+		if os.SameFile(rootInfo, fi) {
+			break // symlink in root
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", false
+		}
+		path = parent
+	}
+
+	// TODO: there's probably an optimization here since path == root
 
 	// Try expanding symlinks and comparing
 	// expanded against unexpanded and
 	// expanded against expanded.
 	rootSym, _ := filepath.EvalSymlinks(root)
-	dirSym, _ := filepath.EvalSymlinks(dir)
-
 	if rel, ok = hasSubdir(rootSym, dir); ok {
 		return
 	}
+	dirSym, _ := filepath.EvalSymlinks(dir)
 	if rel, ok = hasSubdir(root, dirSym); ok {
 		return
 	}
+	// log.Println("EvalSymlinks: final:", rootSym, dirSym)
 	return hasSubdir(rootSym, dirSym)
+}
+
+// isSubdir reports if dir is within root by performing lexical analysis only.
+func isSubdir(root, dir string) bool {
+	n := len(root)
+	return n != 0 && n < len(dir) && dir[0:n] == root &&
+		(os.IsPathSeparator(root[n-1]) || os.IsPathSeparator(dir[n]))
 }
 
 // hasSubdir reports if dir is within root by performing lexical analysis only.
 func hasSubdir(root, dir string) (rel string, ok bool) {
-	const sep = string(filepath.Separator)
-	root = filepath.Clean(root)
-	if !strings.HasSuffix(root, sep) {
-		root += sep
+	if isSubdir(root, dir) {
+		n := len(root)
+		if os.IsPathSeparator(root[n-1]) {
+			rel = dir[n:]
+		} else {
+			rel = dir[n+1:]
+		}
+		return filepath.ToSlash(rel), true
 	}
-	dir = filepath.Clean(dir)
-	if !strings.HasPrefix(dir, root) {
-		return "", false
+	return "", false
+}
+
+// inGopath reports if dir is within the GOPATH
+func (ctxt *Context) inGopath(gopath []string, dir string) bool {
+	for _, root := range gopath {
+		if root == dir || isSubdir(root, dir) {
+			return true
+		}
+		// Clean and try again
+		p := filepath.Clean(root)
+		if p != root && (p == dir || isSubdir(p, dir)) {
+			return true
+		}
 	}
-	return filepath.ToSlash(dir[len(root):]), true
+	return false
 }
 
 // readDir calls ctxt.ReadDir (if not nil) or else ioutil.ReadDir.
@@ -220,6 +331,8 @@ func (ctxt *Context) isFile(path string) bool {
 	return true
 }
 
+// TODO: filepath.Clean paths
+//
 // gopath returns the list of Go path directories.
 func (ctxt *Context) gopath() []string {
 	var all []string
@@ -584,9 +697,10 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 		inTestdata := func(sub string) bool {
 			return strings.Contains(sub, "/testdata/") || strings.HasSuffix(sub, "/testdata") || strings.HasPrefix(sub, "testdata/") || sub == "testdata"
 		}
+		all := ctxt.gopath()
 		if ctxt.GOROOT != "" {
 			root := ctxt.joinPath(ctxt.GOROOT, "src")
-			if sub, ok := ctxt.hasSubdir(root, p.Dir); ok && !inTestdata(sub) {
+			if sub, ok := ctxt.hasSubdir(all, root, p.Dir); ok && !inTestdata(sub) {
 				p.Goroot = true
 				p.ImportPath = sub
 				p.Root = ctxt.GOROOT
@@ -594,10 +708,9 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 				goto Found
 			}
 		}
-		all := ctxt.gopath()
 		for i, root := range all {
 			rootsrc := ctxt.joinPath(root, "src")
-			if sub, ok := ctxt.hasSubdir(rootsrc, p.Dir); ok && !inTestdata(sub) {
+			if sub, ok := ctxt.hasSubdir(all, rootsrc, p.Dir); ok && !inTestdata(sub) {
 				// We found a potential import path for dir,
 				// but check that using it wouldn't find something
 				// else first.
@@ -629,13 +742,13 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 			return p, fmt.Errorf("import %q: cannot import absolute path", path)
 		}
 
-		if err := ctxt.importGo(p, path, srcDir, mode); err == nil {
+		gopath := ctxt.gopath() // needed below; avoid computing many times
+
+		if err := ctxt.importGo(p, path, srcDir, gopath, mode); err == nil {
 			goto Found
 		} else if err != errNoModules {
 			return p, err
 		}
-
-		gopath := ctxt.gopath() // needed twice below; avoid computing many times
 
 		// tried records the location of unsuccessful package lookups
 		var tried struct {
@@ -647,11 +760,12 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 		// Vendor directories get first chance to satisfy import.
 		if mode&IgnoreVendor == 0 && srcDir != "" {
 			searchVendor := func(root string, isGoroot bool) bool {
-				sub, ok := ctxt.hasSubdir(root, srcDir)
+				sub, ok := ctxt.hasSubdir(gopath, root, srcDir)
 				if !ok || !strings.HasPrefix(sub, "src/") || strings.Contains(sub, "/testdata/") {
 					return false
 				}
 				for {
+					// TODO: this can just be hasGoFiles()
 					vendor := ctxt.joinPath(root, sub, "vendor")
 					if ctxt.isDir(vendor) {
 						dir := ctxt.joinPath(vendor, path)
@@ -691,7 +805,7 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 			// distribution, they'll continue to pick up their own vendored copy.
 			gorootFirst := srcDir == "" || !strings.HasPrefix(path, "vendor/")
 			if !gorootFirst {
-				_, gorootFirst = ctxt.hasSubdir(ctxt.GOROOT, srcDir)
+				_, gorootFirst = ctxt.hasSubdir(gopath, ctxt.GOROOT, srcDir)
 			}
 			if gorootFirst {
 				dir := ctxt.joinPath(ctxt.GOROOT, "src", path)
@@ -1074,7 +1188,7 @@ var errNoModules = errors.New("not using modules")
 // about the requested package and all dependencies and then only reports about the requested package.
 // Then we reinvoke it for every dependency. But this is still better than not working at all.
 // See golang.org/issue/26504.
-func (ctxt *Context) importGo(p *Package, path, srcDir string, mode ImportMode) error {
+func (ctxt *Context) importGo(p *Package, path, srcDir string, gopath []string, mode ImportMode) error {
 	// To invoke the go command,
 	// we must not being doing special things like AllowBinary or IgnoreVendor,
 	// and all the file system callbacks must be nil (we're meant to use the local file system).
@@ -1121,7 +1235,7 @@ func (ctxt *Context) importGo(p *Package, path, srcDir string, mode ImportMode) 
 		// If the source directory is in GOROOT, then the in-process code works fine
 		// and we should keep using it. Moreover, the 'go list' approach below doesn't
 		// take standard-library vendoring into account and will fail.
-		if _, ok := ctxt.hasSubdir(filepath.Join(ctxt.GOROOT, "src"), absSrcDir); ok {
+		if _, ok := ctxt.hasSubdir(gopath, filepath.Join(ctxt.GOROOT, "src"), absSrcDir); ok {
 			return errNoModules
 		}
 	}

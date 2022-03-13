@@ -767,3 +767,279 @@ func TestAllTags(t *testing.T) {
 		t.Errorf("GoFiles = %v, want %v", p.GoFiles, wantFiles)
 	}
 }
+
+func TestInGopath(t *testing.T) {
+	tests := []struct {
+		dir    string
+		gopath []string
+		result bool
+	}{
+		{"/a/b", []string{"/a"}, true},
+		{"/a/b", []string{"//a/"}, true},
+		{"/a", []string{"/a"}, true}, // Allow exact matches
+		{"/a", []string{"//a"}, true},
+		{"", []string{""}, false},
+		{"/a", []string{"/x"}, false},
+		{"//a/b", []string{"/a"}, false}, // Dir must be clean
+	}
+	for i, tt := range tests {
+		tests[i].dir = filepath.FromSlash(tt.dir)
+	}
+	ctxt := Default
+	for _, tt := range tests {
+		ctxt.GOPATH = strings.Join(tt.gopath, string(os.PathListSeparator))
+		got := ctxt.inGopath(ctxt.gopath(), tt.dir)
+		if got != tt.result {
+			t.Errorf("inGopath(%q, %q) = %t; want %t", ctxt.GOPATH, tt.dir, got, tt.result)
+		}
+	}
+}
+
+func BenchmarkInGopath(b *testing.B) {
+	ctxt := Default
+	ctxt.GOPATH = "/home/user/go" + string(os.PathListSeparator) + "/home/user/go-dev"
+	gopath := ctxt.gopath()
+	for i := 0; i < b.N; i++ {
+		ctxt.inGopath(gopath, "/home/user/go/src/golang.org/x/tools")
+	}
+}
+
+// WARN: remove this test
+//
+// Test that Context.hasSubdir does not call filepath.EvalSymlinks when
+// one of the arguments is a child of GOROOT and the other a child of
+// GOPATH.
+func TestHasSubdirShortCircuit(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+	testenv.MustHaveGoBuild(t) // really must just have source
+
+	// Create a GOPATH in a temporary directory and create a subdirectory that
+	// links back to the stdlib's "fmt" package. This allows us to determine if
+	// hasSubdir called filepath.EvalSymlinks or short-circuited after detecting
+	// that root and dir are subdirectories of GOROOT and GOPATH.
+	gopath := t.TempDir()
+	ctxt := Default
+	ctxt.GOPATH = gopath
+	pkgDir := filepath.Join(gopath, "src/example.com/fmt")
+	rootSrc := filepath.Join(ctxt.GOROOT, "src")
+	fmtDir := filepath.Join(rootSrc, "fmt")
+
+	if err := os.MkdirAll(filepath.Dir(pkgDir), 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(fmtDir, pkgDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sanity check to make sure the "src/example.com/fmt" package expands
+	// to the stdlib's "fmt" package
+	rel, err := filepath.EvalSymlinks(pkgDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel != fmtDir {
+		t.Fatalf("Expected path %q to resolve to %q got: %q",
+			pkgDir, filepath.Join(rootSrc, "fmt"), rel)
+	}
+
+	tests := []struct {
+		root, dir string
+	}{
+		{rootSrc, pkgDir},
+		{pkgDir, rootSrc},
+	}
+	for _, tt := range tests {
+		if rel, ok := ctxt.hasSubdir(ctxt.gopath(), tt.root, tt.dir); ok {
+			t.Errorf("hasSubdir(%q, %q) = %q, %t; want \"\", false",
+				tt.root, tt.dir, rel, ok)
+		}
+	}
+}
+
+// TODO: do we need to replicate this test for symlinked GOROOT? I tested
+// it manually and I think no.
+//
+// TODO: Add test for cmd/go/testdata/script/list_symlink_vendor_issue14054.txt
+// https://github.com/golang/go/issues/14054
+func TestSymlinkVendorIssue14054(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+	testenv.MustHaveGoBuild(t) // really must just have source
+
+	// Create a GOPATH in a temporary directory. We don't use testdata
+	// because it's in GOROOT, which interferes with the Context.hasSubdir
+	// heuristic.
+	tempdir := t.TempDir()
+	gopath := filepath.Join(tempdir, "gopath")
+	symdir := filepath.Join(tempdir, "symdir1")
+
+	if err := os.MkdirAll(filepath.Join(gopath, "src/dir1/vendor/v"), 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(gopath, "src/dir1"), symdir); err != nil {
+		t.Fatal(err)
+	}
+	const mainSource = "package main\n\n" +
+		`import _ "v"` + "\n\n" +
+		"func main() {}\n"
+	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/p.go"), []byte(mainSource), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/vendor/v/v.go"), []byte("package v"), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GO111MODULE", "off")
+	t.Setenv("GOPATH", gopath)
+	ctxt := Default
+	ctxt.GOPATH = gopath
+	ctxt.Dir = symdir
+
+	tests := []struct {
+		label   string
+		mode    ImportMode
+		imports []string
+	}{
+		{"Import(FindOnly)", FindOnly, nil},
+		{"Import(0)", 0, []string{"v"}},
+	}
+	for _, test := range tests {
+		p, err := ctxt.Import("dir1", symdir, test.mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ImportPath != "dir1" {
+			t.Errorf("%s: import succeeded but found %q, want %q", test.label, p.ImportPath, "dir1")
+		}
+		if p.Root != gopath {
+			t.Errorf("%s: import succeeded but found root %q, want %q", test.label, p.Root, gopath)
+		}
+		if !reflect.DeepEqual(p.Imports, test.imports) {
+			t.Errorf("%s: import succeeded but found imports %q, want %q", test.label, p.Imports, test.imports)
+		}
+	}
+}
+
+// WARN: do we need this test ??? It doesn't add anything to coverage
+func TestSymlinkVendorIssue14054_GOROOT(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+	testenv.MustHaveGoBuild(t) // really must just have source
+
+	t.Setenv("GO111MODULE", "off")
+
+	// Create a GOPATH in a temporary directory. We don't use testdata
+	// because it's in GOROOT, which interferes with the Context.hasSubdir
+	// heuristic.
+	tempdir := t.TempDir()
+
+	gopath := filepath.Join(tempdir, "gopath")
+	symGopath := filepath.Join(tempdir, "symgo")
+	symdir := filepath.Join(tempdir, "symdir1")
+
+	if err := os.MkdirAll(filepath.Join(gopath, "src/dir1/vendor/v"), 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(gopath, "src/dir1"), symdir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(gopath, symGopath); err != nil {
+		t.Fatal(err)
+	}
+
+	const mainSource = "package main\n\n" +
+		`import _ "v"` + "\n\n" +
+		"func main() {}\n"
+	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/p.go"), []byte(mainSource), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/vendor/v/v.go"), []byte("package v"), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GOPATH", symGopath)
+	ctxt := Default
+	ctxt.GOPATH = symGopath
+	ctxt.Dir = filepath.Join(gopath, "src/dir1")
+
+	p, err := ctxt.Import("dir1", ctxt.Dir, FindOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "dir1"
+	if p.ImportPath != want {
+		t.Fatalf("Import succeeded but found %q, want %q", p.ImportPath, want)
+	}
+	if p.Root != symGopath {
+		t.Fatalf("Import succeeded but found package root %q, want %q", p.Root, symGopath)
+	}
+}
+
+func BenchmarkDotSlashImport(b *testing.B) {
+	p, err := ImportDir("testdata/other", 0)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if len(p.Imports) != 1 || p.Imports[0] != "./file" {
+		b.Fatalf("testdata/other: Imports=%v, want [./file]", p.Imports)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := Import("./file", "testdata/other", 0)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkHasSubdir(b *testing.B) {
+	testenv.MustHaveGoBuild(b) // really must just have source
+
+	ctxt := Default
+	wd, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctxt.GOPATH = filepath.Join(wd, "testdata/withvendor")
+	ctxt.Dir = filepath.Join(ctxt.GOPATH, "src/example.com/p")
+
+	gopaths := ctxt.gopath()
+	b.ResetTimer()
+
+	b.Run("Found", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, ok := ctxt.hasSubdir(gopaths, ctxt.GOPATH, ctxt.Dir)
+			if !ok {
+				b.Fatal("hasSubdir() = false")
+			}
+		}
+	})
+
+	b.Run("NotFound", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, ok := ctxt.hasSubdir(gopaths, ctxt.GOPATH, ctxt.GOROOT)
+			if ok {
+				b.Fatal("hasSubdir() = true")
+			}
+		}
+	})
+}
+
+func BenchmarkImportVendor(b *testing.B) {
+	testenv.MustHaveGoBuild(b) // really must just have source
+
+	b.Setenv("GO111MODULE", "off")
+
+	ctxt := Default
+	wd, err := os.Getwd()
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctxt.GOPATH = filepath.Join(wd, "testdata/withvendor")
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		_, err := ctxt.Import("c/d", filepath.Join(ctxt.GOPATH, "src/a/b"), 0)
+		if err != nil {
+			b.Fatalf("cannot find vendored c/d from testdata src/a/b directory: %v", err)
+		}
+	}
+}
