@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"strings"
 
 	"cmd/go/internal/base"
@@ -87,6 +88,7 @@ func init() {
 func main() {
 	_ = go11tag
 	flag.Usage = base.Usage
+	cpuprofile := flag.String("cpuprofile", "", "write cpu profile to file")
 	flag.Parse()
 	log.SetFlags(0)
 
@@ -143,6 +145,22 @@ func main() {
 	if fi, err := os.Stat(cfg.GOROOT); err != nil || !fi.IsDir() {
 		fmt.Fprintf(os.Stderr, "go: cannot find GOROOT directory: %v\n", cfg.GOROOT)
 		os.Exit(2)
+	}
+
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			base.Fatalf("could not create CPU profile: %v", err)
+		}
+		base.AtExit(func() {
+			pprof.StopCPUProfile()
+			if err := f.Close(); err != nil {
+				log.Printf("error: closing cpuprofile: %v", err)
+			}
+		})
+		if err := pprof.StartCPUProfile(f); err != nil {
+			base.Fatalf("could not start CPU profile: %v", err)
+		}
 	}
 
 BigCmdLoop:
