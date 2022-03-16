@@ -651,19 +651,16 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 					return false
 				}
 				for {
-					vendor := ctxt.joinPath(root, sub, "vendor")
-					if ctxt.isDir(vendor) {
-						dir := ctxt.joinPath(vendor, path)
-						if ctxt.isDir(dir) && hasGoFiles(ctxt, dir) {
-							p.Dir = dir
-							p.ImportPath = strings.TrimPrefix(pathpkg.Join(sub, "vendor", path), "src/")
-							p.Goroot = isGoroot
-							p.Root = root
-							setPkga() // p.ImportPath changed
-							return true
-						}
-						tried.vendor = append(tried.vendor, dir)
+					dir := ctxt.joinPath(root, sub, "vendor", path)
+					if (ctxt.IsDir == nil || ctxt.isDir(dir)) && hasGoFiles(ctxt, dir) {
+						p.Dir = dir
+						p.ImportPath = strings.TrimPrefix(pathpkg.Join(sub, "vendor", path), "src/")
+						p.Goroot = isGoroot
+						p.Root = root
+						setPkga() // p.ImportPath changed
+						return true
 					}
+					tried.vendor = append(tried.vendor, dir)
 					i := strings.LastIndex(sub, "/")
 					if i < 0 {
 						break
