@@ -46,6 +46,8 @@ var cleantests = []PathTest{
 	{"../", ".."},
 	{"../../", "../.."},
 	{"/abc/", "/abc"},
+	{".//", "."},
+	{"//", "/"},
 
 	// Remove doubled slash
 	{"abc//def//ghi", "abc/def/ghi"},
@@ -58,6 +60,8 @@ var cleantests = []PathTest{
 	{"abc/./def", "abc/def"},
 	{"/./abc/def", "/abc/def"},
 	{"abc/.", "abc"},
+	{"././a", "a"},
+	{"a/././b", "a/b"},
 
 	// Remove .. elements
 	{"abc/def/ghi/../jkl", "abc/def/jkl"},
@@ -69,11 +73,16 @@ var cleantests = []PathTest{
 	{"/abc/def/../../..", "/"},
 	{"abc/def/../../../ghi/jkl/../../../mno", "../../mno"},
 	{"/../abc", "/abc"},
+	{"/qux/../quux/foobar.com/baz", "/quux/foobar.com/baz"}, // TestRedirect
+	{"/../", "/"},
 
 	// Combinations
 	{"abc/./../def", "def"},
 	{"abc//./../def", "def"},
 	{"abc/../../././../def", "../../def"},
+
+	// Ignore "..."
+	{"example.../b@upgrade", "example.../b@upgrade"},
 }
 
 var wincleantests = []PathTest{
@@ -265,6 +274,8 @@ var jointests = []JoinTest{
 
 	// three parameters
 	{[]string{"/", "a", "b"}, "/a/b"},
+
+	{[]string{"dotname", "./", ".dot"}, "dotname/.dot"},
 }
 
 var winjointests = []JoinTest{
@@ -1621,4 +1632,25 @@ func TestIssue51617(t *testing.T) {
 	if !reflect.DeepEqual(saw, want) {
 		t.Errorf("got directories %v, want %v", saw, want)
 	}
+}
+
+func BenchmarkClean(b *testing.B) {
+	b.Run("Clean", func(b *testing.B) {
+		path := "/home/user/go/src/golang.org/x/tools/gopls"
+		if runtime.GOOS == "windows" {
+			path = "C:" + filepath.FromSlash(path)
+		}
+		for i := 0; i < b.N; i++ {
+			filepath.Clean(path)
+		}
+	})
+	b.Run("Dirty", func(b *testing.B) {
+		path := "/home/user/go/src/../src/golang.org/x/tools/gopls/"
+		if runtime.GOOS == "windows" {
+			path = "C:" + filepath.FromSlash(path)
+		}
+		for i := 0; i < b.N; i++ {
+			filepath.Clean(path)
+		}
+	})
 }

@@ -87,6 +87,19 @@ const (
 // Getting Dot-Dot Right,”
 // https://9p.io/sys/doc/lexnames.html
 func Clean(path string) string {
+
+	// WARN: we probably want to do this after the volume name because Windows
+	//
+	// Remove leading "./" and any extra separators (".//a" => "a")
+	if len(path) >= 2 && path[0] == '.' && os.IsPathSeparator(path[1]) {
+		path = path[2:]
+		for path != "" && os.IsPathSeparator(path[0]) {
+			path = path[1:]
+		}
+	}
+	// Remove trailing separator, if any
+	path = trimTrailingSeparators(path)
+
 	originalPath := path
 	volLen := volumeNameLen(path)
 	path = path[volLen:]
@@ -112,6 +125,26 @@ func Clean(path string) string {
 		r, dotdot = 1, 1
 	}
 
+	// Fast path for clean paths. The check is imprecise and will mark
+	// some clean paths like "a/.git" and "a/..." as dirty, but is still
+	// faster than just using the big "dirty" loop below.
+	for i := 0; i < len(path)-1; i++ {
+		if os.IsPathSeparator(path[i]) && (os.IsPathSeparator(path[i+1]) || path[i+1] == '.') {
+			if i != 0 {
+				r = i
+				out.w = i
+			}
+			goto Dirty
+		}
+		if path[i] == '.' && os.IsPathSeparator(path[i+1]) {
+			// It's faster to not update r and out.w here since doing so
+			// requires checking for i+2 == len(path) or path[i+2] == '/'.
+			goto Dirty
+		}
+	}
+	return path
+
+Dirty:
 	for r < n {
 		switch {
 		case os.IsPathSeparator(path[r]):
@@ -166,10 +199,23 @@ func Clean(path string) string {
 
 	// Turn empty string into "."
 	if out.w == 0 {
+		if out.volLen == 0 {
+			return "."
+		}
 		out.append('.')
 	}
 
 	return FromSlash(out.string())
+}
+
+// trimTrailingSeparators removes trailing separators from s.
+// If s is all separators, s[0] is returned.
+func trimTrailingSeparators(s string) string {
+	i := len(s) - 1
+	for i > 0 && os.IsPathSeparator(s[i]) {
+		i--
+	}
+	return s[:i+1]
 }
 
 // ToSlash returns the result of replacing each separator character
