@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -91,14 +92,18 @@ func Clean(path string) string {
 	// WARN: we probably want to do this after the volume name because Windows
 	//
 	// Remove leading "./" and any extra separators (".//a" => "a")
-	if len(path) >= 2 && path[0] == '.' && os.IsPathSeparator(path[1]) {
-		path = path[2:]
-		for path != "" && os.IsPathSeparator(path[0]) {
-			path = path[1:]
+
+	// WARN WARN WARN
+	if runtime.GOOS != "windows" {
+		if len(path) >= 2 && path[0] == '.' && os.IsPathSeparator(path[1]) {
+			path = path[2:]
+			for path != "" && os.IsPathSeparator(path[0]) {
+				path = path[1:]
+			}
 		}
+		// Remove trailing separator, if any
+		path = trimTrailingSeparators(path)
 	}
-	// Remove trailing separator, if any
-	path = trimTrailingSeparators(path)
 
 	originalPath := path
 	volLen := volumeNameLen(path)
