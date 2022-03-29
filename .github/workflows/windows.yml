@@ -1,0 +1,27 @@
+name: Test Go on Windows
+
+on:
+  push:
+    branches:
+      - master
+      - 'cev/**'
+  pull_request:
+    branches:
+      - master
+      - 'cev/**'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.18
+      - name: Build and Test
+        working-directory: src
+        run: cmd.exe /c '.\all.bat'
+        # shell: cmd
+        # run: |
+        #   all.bat
