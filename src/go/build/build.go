@@ -147,7 +147,7 @@ func (ctxt *Context) isDir(path string) bool {
 
 // hasSubdir calls ctxt.HasSubdir (if not nil) or else uses
 // the local file system to answer the question.
-func (ctxt *Context) hasSubdir(gopath []string, root, dir string) (rel string, ok bool) {
+func (ctxt *Context) hasSubdir(gopaths []string, root, dir string) (rel string, ok bool) {
 	if f := ctxt.HasSubdir; f != nil {
 		return f(root, dir)
 	}
@@ -159,29 +159,6 @@ func (ctxt *Context) hasSubdir(gopath []string, root, dir string) (rel string, o
 	// 	2. pass in GOPATHS (if we have it)
 	// 	3. store/cache the result of stat'ing GOROOT and GOPATH(s)
 
-	// Try using paths we received before cleaning.
-	if rel, ok = hasSubdir(root, dir); ok {
-		// Remove any leading slashes because filepath.Clean
-		// will not remove them for us.
-		rel = strings.TrimLeft(rel, "/")
-		if rel != "" {
-			return filepath.ToSlash(filepath.Clean(rel)), true
-		}
-		return "", false
-	}
-
-	// WARN: cleaning all paths first takes 365ns/op vs 37ns/op
-
-	// WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN
-	// WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN WARN
-	goroot := ctxt.GOROOT
-	if (root == goroot || isSubdir(goroot, root)) && ctxt.inGopath(gopath, dir) ||
-		(dir == goroot || isSubdir(goroot, dir)) && ctxt.inGopath(gopath, root) {
-		return "", false
-	}
-
-	// TODO: we probably don't need this since we're passed clean paths
-	// Clean paths and check again.
 	root = filepath.Clean(root)
 	dir = filepath.Clean(dir)
 	if rel, ok = hasSubdir(root, dir); ok {
@@ -200,15 +177,15 @@ func (ctxt *Context) hasSubdir(gopath []string, root, dir string) (rel string, o
 	//
 	// NOTE: This should not be an issue because a package cannot exist in
 	// both.
-	goroot = filepath.Clean(goroot)
+	goroot := filepath.Clean(ctxt.GOROOT)
 
 	// WARN WARN WARN
-	if gopath == nil {
-		gopath = ctxt.gopath()
+	if gopaths == nil {
+		gopaths = ctxt.gopath()
 	}
 
-	if (root == goroot || isSubdir(goroot, root)) && ctxt.inGopath(gopath, dir) ||
-		(dir == goroot || isSubdir(goroot, dir)) && ctxt.inGopath(gopath, root) {
+	if (root == goroot || isSubdir(goroot, root)) && inGopath(gopaths, dir) ||
+		(dir == goroot || isSubdir(goroot, dir)) && inGopath(gopaths, root) {
 		return "", false
 	}
 
@@ -231,8 +208,7 @@ func (ctxt *Context) hasSubdir(gopath []string, root, dir string) (rel string, o
 			return "", false
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
-			// Issue #14054
-			break // symlink in dir
+			break // issue #14054 symlink in dir
 		}
 		if os.SameFile(rootInfo, fi) {
 			break // symlink in root
@@ -257,12 +233,12 @@ func (ctxt *Context) hasSubdir(gopath []string, root, dir string) (rel string, o
 	if rel, ok = hasSubdir(root, dirSym); ok {
 		return
 	}
-	// log.Println("EvalSymlinks: final:", rootSym, dirSym)
 	return hasSubdir(rootSym, dirSym)
 }
 
 // isSubdir reports if dir is within root by performing lexical analysis only.
 func isSubdir(root, dir string) bool {
+	// TODO: paths are clean so we don't need os.IsPathSeparator
 	n := len(root)
 	return n != 0 && n < len(dir) && dir[0:n] == root &&
 		(os.IsPathSeparator(root[n-1]) || os.IsPathSeparator(dir[n]))
@@ -271,6 +247,7 @@ func isSubdir(root, dir string) bool {
 // hasSubdir reports if dir is within root by performing lexical analysis only.
 func hasSubdir(root, dir string) (rel string, ok bool) {
 	if isSubdir(root, dir) {
+		// TODO: paths are clean so we don't need this
 		n := len(root)
 		if os.IsPathSeparator(root[n-1]) {
 			rel = dir[n:]
@@ -282,15 +259,10 @@ func hasSubdir(root, dir string) (rel string, ok bool) {
 	return "", false
 }
 
-// inGopath reports if dir is within the GOPATH
-func (ctxt *Context) inGopath(gopath []string, dir string) bool {
-	for _, root := range gopath {
+// inGopath reports if dir is equal to or a subdirectory of GOPATH(s).
+func inGopath(gopaths []string, dir string) bool {
+	for _, root := range gopaths {
 		if root == dir || isSubdir(root, dir) {
-			return true
-		}
-		// Clean and try again
-		p := filepath.Clean(root)
-		if p != root && (p == dir || isSubdir(p, dir)) {
 			return true
 		}
 	}
@@ -359,7 +331,7 @@ func (ctxt *Context) gopath() []string {
 			// for c:\program files.
 			continue
 		}
-		all = append(all, p)
+		all = append(all, filepath.Clean(p))
 	}
 	return all
 }

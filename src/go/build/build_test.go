@@ -788,20 +788,28 @@ func TestInGopath(t *testing.T) {
 	ctxt := Default
 	for _, tt := range tests {
 		ctxt.GOPATH = strings.Join(tt.gopath, string(os.PathListSeparator))
-		got := ctxt.inGopath(ctxt.gopath(), tt.dir)
+		got := inGopath(ctxt.gopath(), tt.dir)
 		if got != tt.result {
 			t.Errorf("inGopath(%q, %q) = %t; want %t", ctxt.GOPATH, tt.dir, got, tt.result)
 		}
 	}
 }
 
+// WARN: remove
 func BenchmarkInGopath(b *testing.B) {
 	ctxt := Default
 	ctxt.GOPATH = "/home/user/go" + string(os.PathListSeparator) + "/home/user/go-dev"
 	gopath := ctxt.gopath()
-	for i := 0; i < b.N; i++ {
-		ctxt.inGopath(gopath, "/home/user/go/src/golang.org/x/tools")
-	}
+	b.Run("Found", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			inGopath(gopath, "/home/user/go-dev/src/golang.org/x/tools")
+		}
+	})
+	b.Run("NotFound", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			inGopath(gopath, "/usr/local/go")
+		}
+	})
 }
 
 // WARN: remove this test
@@ -856,6 +864,34 @@ func TestHasSubdirShortCircuit(t *testing.T) {
 	}
 }
 
+// WARN: fix name of this test
+func TestHasSubdirDirty(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+	testenv.MustHaveGoBuild(t) // really must just have source
+
+	// Create a GOPATH in a temporary directory and create a subdirectory that
+	// links back to the stdlib's "fmt" package. This allows us to determine if
+	// hasSubdir called filepath.EvalSymlinks or short-circuited after detecting
+	// that root and dir are subdirectories of GOROOT and GOPATH.
+	gopath := t.TempDir()
+	ctxt := Default
+	ctxt.GOPATH = gopath
+	dir := filepath.FromSlash(gopath + "/../")
+	if rel, ok := ctxt.hasSubdir(nil, gopath, dir); rel != "" || ok {
+		t.Errorf("hasSubdir(nil, %q, %q) = %q, %t want: \"\", false", gopath, dir, rel, ok)
+	}
+	// if ok {
+	// 	t.Error("NO")
+	// }
+	// if rel != "" {
+	// 	t.Errorf("REL=%q", rel)
+	// }
+}
+
+// WARN: This test does not catch the issue !!!
+// 	--- FAIL: TestScript/list_symlink_internal (0.07s)
+// 	--- FAIL: TestScript/list_symlink_vendor_issue14054 (0.08s)
+//
 // TODO: do we need to replicate this test for symlinked GOROOT? I tested
 // it manually and I think no.
 //
@@ -884,7 +920,7 @@ func TestSymlinkVendorIssue14054(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/p.go"), []byte(mainSource), 0666); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/vendor/v/v.go"), []byte("package v"), 0666); err != nil {
+	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/vendor/v/v.go"), []byte("package v\n"), 0666); err != nil {
 		t.Fatal(err)
 	}
 
