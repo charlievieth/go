@@ -15,7 +15,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
 )
@@ -93,21 +92,21 @@ func Clean(path string) string {
 	//
 	// Remove leading "./" and any extra separators (".//a" => "a")
 
-	// WARN WARN WARN
-	if runtime.GOOS != "windows" {
-		if len(path) >= 2 && path[0] == '.' && os.IsPathSeparator(path[1]) {
-			path = path[2:]
-			for path != "" && os.IsPathSeparator(path[0]) {
-				path = path[1:]
-			}
-		}
-		// Remove trailing separator, if any
-		path = trimTrailingSeparators(path)
-	}
+	// Remove trailing separator, if any
+	volLen := volumeNameLen(path)
+	path = trimTrailingSeparators(path, volLen)
 
 	originalPath := path
-	volLen := volumeNameLen(path)
 	path = path[volLen:]
+
+	// TODO: on Windows: `join(["C:." "a"]) = "C:.\\a", want "C:a"`
+	if len(path) >= 2 && path[0] == '.' && os.IsPathSeparator(path[1]) {
+		path = path[2:]
+		for path != "" && os.IsPathSeparator(path[0]) {
+			path = path[1:]
+		}
+	}
+
 	if path == "" {
 		if volLen > 1 && originalPath[1] != ':' {
 			// should be UNC
@@ -147,7 +146,10 @@ func Clean(path string) string {
 			goto Dirty
 		}
 	}
-	return path
+	if volLen > 0 {
+		return FromSlash(originalPath[:volLen] + path)
+	}
+	return FromSlash(path)
 
 Dirty:
 	for r < n {
@@ -215,9 +217,9 @@ Dirty:
 
 // trimTrailingSeparators removes trailing separators from s.
 // If s is all separators, s[0] is returned.
-func trimTrailingSeparators(s string) string {
+func trimTrailingSeparators(s string, volLen int) string {
 	i := len(s) - 1
-	for i > 0 && os.IsPathSeparator(s[i]) {
+	for i > volLen && os.IsPathSeparator(s[i]) {
 		i--
 	}
 	return s[:i+1]
