@@ -12,7 +12,7 @@ stdout ^$PWD$
 # Were we really inside a GOPATH workspace?
 env GO111MODULE=off
 go list -f {{.Root}}
-stdout ^$WORK/tmp$
+stdout ^$WORK[/\\]tmp$
 
 -- $WORK/tmp/src/test/go.mod --
 module test
