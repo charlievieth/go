@@ -159,31 +159,27 @@ func (ctxt *Context) hasSubdir(gopaths []string, root, dir string) (rel string, 
 	// 	2. pass in GOPATHS (if we have it)
 	// 	3. store/cache the result of stat'ing GOROOT and GOPATH(s)
 
-	root = filepath.Clean(root)
+	// root is either clean or GOROOT
 	dir = filepath.Clean(dir)
 	if rel, ok = hasSubdir(root, dir); ok {
 		return
 	}
 
-	// TODO: improve and address below comments
-	//
-	// If either root or dir is GOROOT or a subdirectory of it and the other
-	// is a subdirectory of GOPATH we can assume the two do not overlap and
-	// skip the expensive call to filepath.EvalSymlinks.
-	//
-	// WARN: this breaks if we allow a pkg defined in the GOPATH to be
-	// symlinked into GOROOT and be imported both as a stdlib pkg and as
-	// a GOPATH package (the GOROOT vendor directory probably allows this).
-	//
-	// NOTE: This should not be an issue because a package cannot exist in
-	// both.
+	// GOROOT and GOPATH cannot overlap.
+	// So if either root or dir is in GOROOT and the other is in the GOPATH
+	// we can safely assume dir is not a subdirectory of root and skip the
+	// expensive call to EvalSymlinks.
+
+	// GOROOT and GOPATH cannot overlap, so if either argument is one and
+	// the other in in the other - we can safely assume that dir is not
+	// a subdirectory of root and skip the very expensive call to
+	// filepath.EvalSymlinks.
+
+	// If either root or dir is GOROOT or a child of it and the other is a
+	// child  of GOPATH we can assume the two do not overlap and skip the
+	// expensive call to filepath.EvalSymlinks.
+
 	goroot := filepath.Clean(ctxt.GOROOT)
-
-	// WARN WARN WARN
-	if gopaths == nil {
-		gopaths = ctxt.gopath()
-	}
-
 	if (root == goroot || isSubdir(goroot, root)) && inGopath(gopaths, dir) ||
 		(dir == goroot || isSubdir(goroot, dir)) && inGopath(gopaths, root) {
 		return "", false
@@ -194,7 +190,7 @@ func (ctxt *Context) hasSubdir(gopaths []string, root, dir string) (rel string, 
 
 	// TODO: improve comment
 	//
-	// It is unlikely that dir is a subdirectory of root, so optimize
+	// It is now unlikely that dir is a subdirectory of root, so optimize
 	// for that case using os.Stat and os.SameFile, before attempting
 	// the much more expensive call to filepath.EvalSymlinks.
 	rootInfo, err := os.Stat(root)
@@ -238,23 +234,15 @@ func (ctxt *Context) hasSubdir(gopaths []string, root, dir string) (rel string, 
 
 // isSubdir reports if dir is within root by performing lexical analysis only.
 func isSubdir(root, dir string) bool {
-	// TODO: paths are clean so we don't need os.IsPathSeparator
 	n := len(root)
-	return n != 0 && n < len(dir) && dir[0:n] == root &&
-		(os.IsPathSeparator(root[n-1]) || os.IsPathSeparator(dir[n]))
+	return 0 < n && n < len(dir) && dir[0:n] == root &&
+		n < len(dir) /* BCE */ && os.IsPathSeparator(dir[n])
 }
 
 // hasSubdir reports if dir is within root by performing lexical analysis only.
 func hasSubdir(root, dir string) (rel string, ok bool) {
 	if isSubdir(root, dir) {
-		// TODO: paths are clean so we don't need this
-		n := len(root)
-		if os.IsPathSeparator(root[n-1]) {
-			rel = dir[n:]
-		} else {
-			rel = dir[n+1:]
-		}
-		return filepath.ToSlash(rel), true
+		return filepath.ToSlash(dir[len(root)+1:]), true
 	}
 	return "", false
 }
@@ -303,8 +291,6 @@ func (ctxt *Context) isFile(path string) bool {
 	return true
 }
 
-// TODO: filepath.Clean paths
-//
 // gopath returns the list of Go path directories.
 func (ctxt *Context) gopath() []string {
 	var all []string
@@ -331,7 +317,7 @@ func (ctxt *Context) gopath() []string {
 			// for c:\program files.
 			continue
 		}
-		all = append(all, filepath.Clean(p))
+		all = append(all, ctxt.joinPath(p)) // Use joinPath to clean p
 	}
 	return all
 }
@@ -777,6 +763,7 @@ func (ctxt *Context) Import(path string, srcDir string, mode ImportMode) (*Packa
 			// distribution, they'll continue to pick up their own vendored copy.
 			gorootFirst := srcDir == "" || !strings.HasPrefix(path, "vendor/")
 			if !gorootFirst {
+				// WARN: hasSubdir: root *may* be dirty here
 				_, gorootFirst = ctxt.hasSubdir(gopath, ctxt.GOROOT, srcDir)
 			}
 			if gorootFirst {

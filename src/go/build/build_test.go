@@ -889,8 +889,9 @@ func TestHasSubdirDirty(t *testing.T) {
 }
 
 // WARN: This test does not catch the issue !!!
-// 	--- FAIL: TestScript/list_symlink_internal (0.07s)
-// 	--- FAIL: TestScript/list_symlink_vendor_issue14054 (0.08s)
+//
+//	--- FAIL: TestScript/list_symlink_internal (0.07s)
+//	--- FAIL: TestScript/list_symlink_vendor_issue14054 (0.08s)
 //
 // TODO: do we need to replicate this test for symlinked GOROOT? I tested
 // it manually and I think no.
