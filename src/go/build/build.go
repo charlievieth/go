@@ -283,12 +283,16 @@ func (ctxt *Context) openFile(path string) (io.ReadCloser, error) {
 // It reuses openFile instead of adding another function to the
 // list in Context.
 func (ctxt *Context) isFile(path string) bool {
-	f, err := ctxt.openFile(path)
-	if err != nil {
-		return false
+	if ctxt.OpenFile != nil {
+		f, err := ctxt.openFile(path)
+		if err != nil {
+			return false
+		}
+		f.Close()
+		return true
 	}
-	f.Close()
-	return true
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // gopath returns the list of Go path directories.

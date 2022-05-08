@@ -1080,3 +1080,21 @@ func BenchmarkImportVendor(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkIsFile(b *testing.B) {
+	ctxt := Default
+	b.Run("Found", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if !ctxt.isFile("./build_test.go") {
+				b.Fatal("WAT")
+			}
+		}
+	})
+	b.Run("NotFound", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if ctxt.isFile("./build_test.nope") {
+				b.Fatal("WAT")
+			}
+		}
+	})
+}
