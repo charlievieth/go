@@ -767,3 +767,202 @@ func TestAllTags(t *testing.T) {
 		t.Errorf("GoFiles = %v, want %v", p.GoFiles, wantFiles)
 	}
 }
+
+func TestHasSubdir(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+
+	tempdir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	files := map[string]string{
+		"gopath/src/dir1/p.go":          "package main",
+		"gopath/src/dir1/vendor/v/v.go": "package v",
+		"goroot/src/fmt.go":             "package fmt",
+		"symdir1":                       "LINK:gopath/src/dir1",
+		"sympath":                       "LINK:gopath",
+		"symroot":                       "LINK:goroot",
+	}
+	symlinks := map[string]string{}
+	for path, content := range files {
+		name := filepath.Join(tempdir, path)
+		if strings.HasPrefix(content, "LINK:") {
+			symlinks[name] = filepath.FromSlash(strings.TrimPrefix(content, "LINK:"))
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(name), 0777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(content+"\n"), 0666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for file, dst := range symlinks {
+		if err := os.Symlink(dst, file); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		root, dir string
+		want      bool
+	}{
+		{"gopath", "gopath/src/dir1", true},
+		{"gopath", "gopath//src//dir1", true},
+		{"gopath", "sympath/src/dir1", true},
+		{"sympath", "gopath/src/dir1", true},
+		{"sympath", "sympath/src/dir1", true},
+		{"symdir1", "gopath/src/dir1/vendor/v", true},
+
+		{"gopath", "sympath/src/nonexistent", false},
+		{"goroot", "gopath/src/dir1", false},
+		{"symroot", "sympath/src/dir1", false},
+		{"badroot", "sympath/src/dir1", false},
+	}
+
+	for _, GOPATH := range []string{"gopath", "sympath"} {
+		for _, GOROOT := range []string{"goroot", "symroot"} {
+			ctxt := Default
+			ctxt.GOPATH = filepath.Join(tempdir, GOPATH)
+			ctxt.GOROOT = filepath.Join(tempdir, GOROOT)
+
+			for _, test := range tests {
+				root := filepath.Join(tempdir, test.root)
+				dir := filepath.Join(tempdir, test.dir)
+				_, got := ctxt.hasSubdir(ctxt.gopath(), root, dir)
+				if got != test.want {
+					t.Errorf("hasSubdir(%q, %q) = %t; want: %t", test.root, test.dir, got, test.want)
+				}
+			}
+		}
+	}
+}
+
+func TestHasSubdirAllocs(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+	testenv.MustHaveGoBuild(t) // really must just have source
+
+	gopath, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(gopath, "src", "p1")
+	if err := os.MkdirAll(pkg, 0777); err != nil {
+		t.Fatal(err)
+	}
+	ctxt := Default
+	ctxt.GOPATH = gopath
+	ctxt.GOROOT = filepath.Clean(ctxt.GOROOT)
+	gopaths := ctxt.gopath()
+
+	// Make sure we don't allocate when root/dir are in GOROOT or GOPATH
+	var tests = []struct {
+		root, dir string
+	}{
+		{ctxt.GOROOT, ctxt.GOPATH},
+		{ctxt.GOROOT, pkg},
+		{ctxt.GOPATH, ctxt.GOROOT},
+	}
+	for _, test := range tests {
+		allocs := testing.AllocsPerRun(10, func() {
+			ctxt.hasSubdir(gopaths, test.root, test.dir)
+		})
+		if allocs != 0 {
+			t.Errorf("hasSubdir(%q, %q); got %f allocs want 0", test.root, test.dir, allocs)
+		}
+	}
+}
+
+func TestSymlinkVendorIssue14054(t *testing.T) {
+	testenv.MustHaveSymlink(t)
+	testenv.MustHaveGoBuild(t) // really must just have source
+
+	// Create a GOPATH in a temporary directory. We don't use testdata
+	// because it's in GOROOT, which interferes with the Context.hasSubdir
+	// heuristic.
+	tempdir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gopath := filepath.Join(tempdir, "gopath")
+	symdir := filepath.Join(tempdir, "symdir1")
+
+	if err := os.MkdirAll(filepath.Join(gopath, "src/dir1/vendor/v"), 0777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(gopath, "src/dir1"), symdir); err != nil {
+		t.Fatal(err)
+	}
+	const mainSource = "package main\n\n" +
+		`import _ "v"` + "\n\n" +
+		"func main() {}\n"
+	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/p.go"), []byte(mainSource), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gopath, "src/dir1/vendor/v/v.go"), []byte("package v\n"), 0666); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GO111MODULE", "off")
+	t.Setenv("GOPATH", gopath)
+	ctxt := Default
+	ctxt.GOPATH = gopath
+	ctxt.Dir = symdir
+
+	tests := []struct {
+		label   string
+		mode    ImportMode
+		imports []string
+	}{
+		{"Import(FindOnly)", FindOnly, nil},
+		{"Import(0)", 0, []string{"v"}},
+	}
+	for _, test := range tests {
+		p, err := ctxt.Import("dir1", symdir, test.mode)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ImportPath != "dir1" {
+			t.Errorf("%s: import succeeded but found %q, want %q", test.label, p.ImportPath, "dir1")
+		}
+		if p.Root != gopath {
+			t.Errorf("%s: import succeeded but found root %q, want %q", test.label, p.Root, gopath)
+		}
+		if !reflect.DeepEqual(p.Imports, test.imports) {
+			t.Errorf("%s: import succeeded but found imports %q, want %q", test.label, p.Imports, test.imports)
+		}
+	}
+}
+
+func BenchmarkHasSubdir(b *testing.B) {
+	testenv.MustHaveGoBuild(b) // really must just have source
+
+	ctxt := Default
+	ctxt.GOPATH = b.TempDir()
+	ctxt.Dir = filepath.Join(ctxt.GOPATH, "src/example.com/p")
+	if err := os.MkdirAll(ctxt.Dir, 0777); err != nil {
+		b.Fatal(err)
+	}
+
+	gopaths := ctxt.gopath()
+	b.ResetTimer()
+
+	b.Run("Found", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, ok := ctxt.hasSubdir(gopaths, ctxt.GOPATH, ctxt.Dir)
+			if !ok {
+				b.Fatal("hasSubdir() = false")
+			}
+		}
+	})
+
+	b.Run("NotFound", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			_, ok := ctxt.hasSubdir(gopaths, ctxt.GOPATH, ctxt.GOROOT)
+			if ok {
+				b.Fatal("hasSubdir() = true")
+			}
+		}
+	})
+}
