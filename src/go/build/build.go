@@ -152,13 +152,6 @@ func (ctxt *Context) hasSubdir(gopaths []string, root, dir string) (rel string, 
 		return f(root, dir)
 	}
 
-	// TODO:
-	// 	1. "root" is always clean and "dir" is clean if not absolute
-	// 	   we should ensure that "dir" is always clean, since that simplifies
-	// 	   things
-	// 	2. pass in GOPATHS (if we have it)
-	// 	3. store/cache the result of stat'ing GOROOT and GOPATH(s)
-
 	// root is either clean or GOROOT
 	dir = filepath.Clean(dir)
 	if rel, ok = hasSubdir(root, dir); ok {
@@ -170,13 +163,8 @@ func (ctxt *Context) hasSubdir(gopaths []string, root, dir string) (rel string, 
 	// we can safely assume dir is not a subdirectory of root and skip the
 	// expensive call to EvalSymlinks.
 
-	// GOROOT and GOPATH cannot overlap, so if either argument is one and
-	// the other in in the other - we can safely assume that dir is not
-	// a subdirectory of root and skip the very expensive call to
-	// filepath.EvalSymlinks.
-
-	// If either root or dir is GOROOT or a child of it and the other is a
-	// child  of GOPATH we can assume the two do not overlap and skip the
+	// If either root or dir is GOROOT, or a child of it, and the other is
+	// a child of GOPATH we can assume the two do not overlap and skip the
 	// expensive call to filepath.EvalSymlinks.
 
 	goroot := filepath.Clean(ctxt.GOROOT)
@@ -185,14 +173,9 @@ func (ctxt *Context) hasSubdir(gopaths []string, root, dir string) (rel string, 
 		return "", false
 	}
 
-	// WARN: This might be broken if root is a symlink (try reversing the
-	// test we have for issue #14054)
-
-	// TODO: improve comment
-	//
-	// It is now unlikely that dir is a subdirectory of root, so optimize
-	// for that case using os.Stat and os.SameFile, before attempting
-	// the much more expensive call to filepath.EvalSymlinks.
+	// Use os.SameFile to determine if dir is a child or root before
+	// attempting to use filepath.EvalSymlinks, which will stat each
+	// element of both root and dir.
 	rootInfo, err := os.Stat(root)
 	if err != nil {
 		return "", false
