@@ -129,7 +129,7 @@ func (m *Match) MatchPackages() {
 		if m.pattern == "cmd" {
 			root += "cmd" + string(filepath.Separator)
 		}
-		err := fsys.Walk(root, func(path string, fi fs.FileInfo, err error) error {
+		err := fsys.Walk(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err // Likely a permission error, which could interfere with matching.
 			}
@@ -154,8 +154,8 @@ func (m *Match) MatchPackages() {
 				want = false
 			}
 
-			if !fi.IsDir() {
-				if fi.Mode()&fs.ModeSymlink != 0 && want && strings.Contains(m.pattern, "...") {
+			if !d.IsDir() {
+				if d.Type()&fs.ModeSymlink != 0 && want && strings.Contains(m.pattern, "...") {
 					if target, err := fsys.Stat(path); err == nil && target.IsDir() {
 						fmt.Fprintf(os.Stderr, "warning: ignoring symlink %s\n", path)
 					}
@@ -268,11 +268,11 @@ func (m *Match) MatchDirs(modRoots []string) {
 		}
 	}
 
-	err := fsys.Walk(dir, func(path string, fi fs.FileInfo, err error) error {
+	err := fsys.Walk(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err // Likely a permission error, which could interfere with matching.
 		}
-		if !fi.IsDir() {
+		if !d.IsDir() {
 			return nil
 		}
 		top := false

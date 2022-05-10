@@ -55,7 +55,7 @@ func matchPackages(ctx context.Context, m *search.Match, tags map[string]bool, f
 
 	walkPkgs := func(root, importPathRoot string, prune pruning) {
 		root = filepath.Clean(root)
-		err := fsys.Walk(root, func(path string, fi fs.FileInfo, err error) error {
+		err := fsys.Walk(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				m.AddError(err)
 				return nil
@@ -85,8 +85,8 @@ func matchPackages(ctx context.Context, m *search.Match, tags map[string]bool, f
 				want = false
 			}
 
-			if !fi.IsDir() {
-				if fi.Mode()&fs.ModeSymlink != 0 && want && strings.Contains(m.Pattern(), "...") {
+			if !d.IsDir() {
+				if d.Type()&fs.ModeSymlink != 0 && want && strings.Contains(m.Pattern(), "...") {
 					if target, err := fsys.Stat(path); err == nil && target.IsDir() {
 						fmt.Fprintf(os.Stderr, "warning: ignoring symlink %s\n", path)
 					}

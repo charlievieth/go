@@ -317,7 +317,16 @@ func TestReadDir(t *testing.T) {
 				t.Errorf("ReadDir(%q): missing entry: %s IsDir=%v Size=%v", dir, want[0].name, want[0].isDir, want[0].size)
 				want = want[1:]
 			default:
-				infoSize := infos[0].Size()
+				var infoSize int64
+				if d, ok := infos[0].(fileInfo); ok {
+					fi, err := d.Info()
+					if err != nil {
+						t.Fatal(err)
+					}
+					infoSize = fi.Size()
+				} else {
+					infoSize = infos[0].Size()
+				}
 				if want[0].isDir {
 					infoSize = 0
 				}
@@ -632,8 +641,8 @@ func TestWalk(t *testing.T) {
 `,
 			"dir",
 			[]file{
-				{"dir", "dir", 0, fs.ModeDir | 0700, true},
-				{"dir/file.txt", "file.txt", 0, 0600, false},
+				{"dir", "dir", 0, fs.ModeDir, true},
+				{"dir/file.txt", "file.txt", 0, 0, false},
 			},
 		},
 		{"overlay with different file", `
@@ -648,9 +657,9 @@ contents of other file
 `,
 			"dir",
 			[]file{
-				{"dir", "dir", 0, fs.ModeDir | 0500, true},
-				{"dir/file.txt", "file.txt", 23, 0600, false},
-				{"dir/other.txt", "other.txt", 23, 0600, false},
+				{"dir", "dir", 0, fs.ModeDir, true},
+				{"dir/file.txt", "file.txt", 23, 0, false},
+				{"dir/other.txt", "other.txt", 23, 0, false},
 			},
 		},
 		{"overlay with new file", `
@@ -664,9 +673,9 @@ contents of other file
 `,
 			"dir",
 			[]file{
-				{"dir", "dir", 0, fs.ModeDir | 0500, true},
-				{"dir/file.txt", "file.txt", 23, 0600, false},
-				{"dir/other.txt", "other.txt", 23, 0600, false},
+				{"dir", "dir", 0, fs.ModeDir, true},
+				{"dir/file.txt", "file.txt", 23, 0, false},
+				{"dir/other.txt", "other.txt", 23, 0, false},
 			},
 		},
 		{"overlay with new directory", `
@@ -680,10 +689,10 @@ contents of other file
 `,
 			"dir",
 			[]file{
-				{"dir", "dir", 0, fs.ModeDir | 0500, true},
-				{"dir/other.txt", "other.txt", 23, 0600, false},
-				{"dir/subdir", "subdir", 0, fs.ModeDir | 0500, true},
-				{"dir/subdir/file.txt", "file.txt", 23, 0600, false},
+				{"dir", "dir", 0, fs.ModeDir, true},
+				{"dir/other.txt", "other.txt", 23, 0, false},
+				{"dir/subdir", "subdir", 0, fs.ModeDir, true},
+				{"dir/subdir/file.txt", "file.txt", 23, 0, false},
 			},
 		},
 	}
@@ -693,8 +702,12 @@ contents of other file
 			initOverlay(t, tc.overlay)
 
 			var got []file
-			Walk(tc.root, func(path string, info fs.FileInfo, err error) error {
-				got = append(got, file{path, info.Name(), info.Size(), info.Mode(), info.IsDir()})
+			Walk(tc.root, func(path string, d fs.DirEntry, err error) error {
+				fi, err := d.Info()
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, file{path, d.Name(), fi.Size(), d.Type(), d.IsDir()})
 				return nil
 			})
 
@@ -739,9 +752,9 @@ func TestWalkSkipDir(t *testing.T) {
 `)
 
 	var seen []string
-	Walk("dir", func(path string, info fs.FileInfo, err error) error {
+	Walk("dir", func(path string, d fs.DirEntry, err error) error {
 		seen = append(seen, filepath.ToSlash(path))
-		if info.Name() == "skip" {
+		if d.Name() == "skip" {
 			return filepath.SkipDir
 		}
 		return nil
@@ -764,7 +777,7 @@ func TestWalkError(t *testing.T) {
 	initOverlay(t, "{}")
 
 	alreadyCalled := false
-	err := Walk("foo", func(path string, info fs.FileInfo, err error) error {
+	err := Walk("foo", func(path string, _ fs.DirEntry, err error) error {
 		if alreadyCalled {
 			t.Fatal("expected walk function to be called exactly once, but it was called more than once")
 		}
@@ -812,7 +825,7 @@ func TestWalkSymlink(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []string
 
-			err := Walk(tc.dir, func(path string, info fs.FileInfo, err error) error {
+			err := Walk(tc.dir, func(path string, _ fs.DirEntry, err error) error {
 				got = append(got, path)
 				if err != nil {
 					t.Errorf("walkfn: got non nil err argument: %v, want nil err argument", err)

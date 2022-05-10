@@ -130,13 +130,13 @@ func runUse(ctx context.Context, cmd *base.Command, args []string) {
 		}
 
 		// Add or remove entries for any subdirectories that still exist.
-		fsys.Walk(useDir, func(path string, info fs.FileInfo, err error) error {
+		fsys.Walk(useDir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
 
-			if !info.IsDir() {
-				if info.Mode()&fs.ModeSymlink != 0 {
+			if !d.IsDir() {
+				if d.Type()&fs.ModeSymlink != 0 {
 					if target, err := fsys.Stat(path); err == nil && target.IsDir() {
 						fmt.Fprintf(os.Stderr, "warning: ignoring symlink %s\n", path)
 					}
@@ -149,7 +149,7 @@ func runUse(ctx context.Context, cmd *base.Command, args []string) {
 
 		// Remove entries for subdirectories that no longer exist.
 		// Because they don't exist, they will be skipped by Walk.
-		for absDir, _ := range haveDirs {
+		for absDir := range haveDirs {
 			if str.HasFilePathPrefix(absDir, absArg) {
 				if _, ok := keepDirs[absDir]; !ok {
 					keepDirs[absDir] = "" // Mark for deletion.

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -234,17 +233,61 @@ func parentIsOverlayFile(name string) (string, bool) {
 	return "", false
 }
 
+var testFileInfo = false
+
+type fileInfo struct {
+	fs.DirEntry
+}
+
+func (f fileInfo) Mode() os.FileMode {
+	return f.Type()
+}
+
+func (f fileInfo) ModTime() time.Time {
+	if !testFileInfo {
+		panic("not implemented")
+	}
+	if fi, err := f.Info(); err == nil {
+		return fi.ModTime()
+	}
+	return time.Time{}
+}
+
+func (f fileInfo) Size() int64 {
+	if !testFileInfo {
+		panic("not implemented")
+	}
+	if fi, err := f.Info(); err == nil {
+		return fi.Size()
+	}
+	return 0
+}
+
+func (f fileInfo) Sys() interface{} {
+	if !testFileInfo {
+		panic("not implemented")
+	}
+	if fi, err := f.Info(); err == nil {
+		return fi.Sys()
+	}
+	return nil
+}
+
 // errNotDir is used to communicate from ReadDir to IsDirWithGoFiles
 // that the argument is not a directory, so that IsDirWithGoFiles doesn't
 // return an error.
 var errNotDir = errors.New("not a directory")
 
 // readDir reads a dir on disk, returning an error that is errNotDir if the dir is not a directory.
-// Unfortunately, the error returned by ioutil.ReadDir if dir is not a directory
+// Unfortunately, the error returned by os.ReadDir if dir is not a directory
 // can vary depending on the OS (Linux, Mac, Windows return ENOTDIR; BSD returns EINVAL).
 func readDir(dir string) ([]fs.FileInfo, error) {
-	fis, err := ioutil.ReadDir(dir)
+	des, err := os.ReadDir(dir)
 	if err == nil {
+		fis := make([]os.FileInfo, len(des))
+		for i, d := range des {
+			fis[i] = fileInfo{d}
+		}
 		return fis, nil
 	}
 
@@ -404,13 +447,13 @@ func IsDirWithGoFiles(dir string) (bool, error) {
 
 // walk recursively descends path, calling walkFn. Copied, with some
 // modifications from path/filepath.walk.
-func walk(path string, info fs.FileInfo, walkFn filepath.WalkFunc) error {
-	if !info.IsDir() {
-		return walkFn(path, info, nil)
+func walk(path string, d fs.DirEntry, walkFn fs.WalkDirFunc) error {
+	if !d.IsDir() {
+		return walkFn(path, d, nil)
 	}
 
 	fis, readErr := ReadDir(path)
-	walkErr := walkFn(path, info, readErr)
+	walkErr := walkFn(path, d, readErr)
 	// If readErr != nil, walk can't walk into this directory.
 	// walkErr != nil means walkFn want walk to skip this directory or stop walking.
 	// Therefore, if one of readErr and walkErr isn't nil, walk will return.
@@ -424,7 +467,7 @@ func walk(path string, info fs.FileInfo, walkFn filepath.WalkFunc) error {
 
 	for _, fi := range fis {
 		filename := filepath.Join(path, fi.Name())
-		if walkErr = walk(filename, fi, walkFn); walkErr != nil {
+		if walkErr = walk(filename, d, walkFn); walkErr != nil {
 			if !fi.IsDir() || walkErr != filepath.SkipDir {
 				return walkErr
 			}
@@ -435,12 +478,12 @@ func walk(path string, info fs.FileInfo, walkFn filepath.WalkFunc) error {
 
 // Walk walks the file tree rooted at root, calling walkFn for each file or
 // directory in the tree, including root.
-func Walk(root string, walkFn filepath.WalkFunc) error {
+func Walk(root string, walkFn fs.WalkDirFunc) error {
 	info, err := Lstat(root)
 	if err != nil {
 		err = walkFn(root, nil, err)
 	} else {
-		err = walk(root, info, walkFn)
+		err = walk(root, fs.FileInfoToDirEntry(info), walkFn)
 	}
 	if err == filepath.SkipDir {
 		return nil
