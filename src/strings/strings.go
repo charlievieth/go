@@ -11,6 +11,7 @@ import (
 	"internal/bytealg"
 	"unicode"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // explode splits s into a slice of UTF-8 strings,
@@ -1257,4 +1258,45 @@ func CutSuffix(s, suffix string) (before string, found bool) {
 		return s, false
 	}
 	return s[:len(s)-len(suffix)], true
+}
+
+func IsASCII(s string) bool {
+	// for _, c := range []byte(s) {
+	// 	if c >= utf8.RuneSelf {
+	// 		return false
+	// 	}
+	// }
+	// return true
+
+	const (
+		ptrSize        = 4 << (^uintptr(0) >> 63)
+		mask64  uint64 = 0x8080808080808080
+		mask32  uint32 = 0x80808080
+	)
+
+	i := 0
+
+	// Round to 8
+	for ; i < len(s)%8; i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+
+	b := *(*[]byte)(unsafe.Pointer(&s))
+
+	if ptrSize == 8 {
+		for ; i <= len(b)-8; i += 8 {
+			if (mask64 & *(*uint64)(unsafe.Pointer(&b[i]))) != 0 {
+				return false
+			}
+		}
+	} else {
+		for ; i <= len(b)-4; i += 4 {
+			if (mask32 & *(*uint32)(unsafe.Pointer(&b[i]))) != 0 {
+				return false
+			}
+		}
+	}
+	return true
 }

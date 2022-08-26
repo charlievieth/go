@@ -2012,3 +2012,49 @@ func BenchmarkReplaceAll(b *testing.B) {
 		stringSink = ReplaceAll("banana", "a", "<>")
 	}
 }
+
+var IsASCIITests = []struct {
+	s   string
+	out bool
+}{
+	{"abc", true},
+	{"ABcd", true},
+	{"123abc", true},
+	{"αβδ", false},
+	{"abc", true},
+	{"abcdefghijk", true},
+	{"1", true},
+	{"a☺b☻c☹d", false},
+}
+
+func TestIsASCII(t *testing.T) {
+	for _, tt := range IsASCIITests {
+		got := IsASCII(tt.s)
+		if got != tt.out {
+			t.Errorf("IsASCII(%q) = %t; want: %t", tt.s, got, tt.out)
+		}
+	}
+	for i := 1; i <= 2048+7; i++ {
+		s := Repeat("#", i) + "☺"
+		got := IsASCII(s)
+		if got != false {
+			t.Errorf("IsASCII(%q) = %t; want: %t", s[2048:], got, false)
+		}
+	}
+	// for i := 0; i < 8; i++ {
+	// 	s := Repeat("#", 2048+i) + "☺"
+	// 	got := IsASCII(s)
+	// 	if got != false {
+	// 		t.Errorf("IsASCII(%q) = %t; want: %t", s[2048:], got, false)
+	// 	}
+	// }
+}
+
+func BenchmarkIsASCII(b *testing.B) {
+	x := Repeat("#", 2048) // Never matches set
+	for i := 0; i < b.N; i++ {
+		if !IsASCII(x) {
+			b.Fatal("Fail")
+		}
+	}
+}
