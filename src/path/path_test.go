@@ -35,6 +35,8 @@ var cleantests = []PathTest{
 	{"../", ".."},
 	{"../../", "../.."},
 	{"/abc/", "/abc"},
+	{".//", "."},
+	{"//", "/"},
 
 	// Remove doubled slash
 	{"abc//def//ghi", "abc/def/ghi"},
@@ -47,6 +49,8 @@ var cleantests = []PathTest{
 	{"abc/./def", "abc/def"},
 	{"/./abc/def", "/abc/def"},
 	{"abc/.", "abc"},
+	{"././a", "a"},
+	{"a/././b", "a/b"},
 
 	// Remove .. elements
 	{"abc/def/ghi/../jkl", "abc/def/jkl"},
@@ -57,11 +61,30 @@ var cleantests = []PathTest{
 	{"abc/def/../../..", ".."},
 	{"/abc/def/../../..", "/"},
 	{"abc/def/../../../ghi/jkl/../../../mno", "../../mno"},
+	{"/qux/../quux/foobar.com/baz", "/quux/foobar.com/baz"}, // TestRedirect
+	{"/../", "/"},
 
 	// Combinations
 	{"abc/./../def", "def"},
 	{"abc//./../def", "def"},
 	{"abc/../../././../def", "../../def"},
+
+	// Ignore "..."
+	{"example.../b@upgrade", "example.../b@upgrade"},
+}
+
+func TestCleanWildcard(t *testing.T) {
+	tests := []PathTest{
+		{"example.../b@upgrade", "example.../b@upgrade"},
+	}
+	for _, test := range tests {
+		if s := Clean(test.path); s != test.result {
+			t.Errorf("Clean(%q) = %q, want %q", test.path, s, test.result)
+		}
+		if s := Clean(test.result); s != test.result {
+			t.Errorf("Clean(%q) = %q, want %q", test.result, s, test.result)
+		}
+	}
 }
 
 func TestClean(t *testing.T) {
@@ -134,6 +157,8 @@ var jointests = []JoinTest{
 	{[]string{"a/", "b"}, "a/b"},
 	{[]string{"a/", ""}, "a"},
 	{[]string{"", ""}, ""},
+
+	{[]string{"dotname", "./", ".dot"}, "dotname/.dot"},
 }
 
 func TestJoin(t *testing.T) {
@@ -233,4 +258,22 @@ func TestIsAbs(t *testing.T) {
 			t.Errorf("IsAbs(%q) = %v, want %v", test.path, r, test.isAbs)
 		}
 	}
+}
+
+func BenchmarkClean(b *testing.B) {
+	b.Run("Clean", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			Clean("/home/user/go/src/golang.org/x/tools/gopls")
+		}
+	})
+	b.Run("Dirty", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			Clean("/home/user/go/src/../src/golang.org/x/tools/gopls/")
+		}
+	})
+	b.Run("Mod", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			Clean("golang.org/x/tools/gopls/...")
+		}
+	})
 }
