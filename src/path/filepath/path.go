@@ -15,6 +15,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"sort"
 	"strings"
 )
@@ -87,6 +88,9 @@ const (
 // Getting Dot-Dot Right,”
 // https://9p.io/sys/doc/lexnames.html
 func Clean(path string) string {
+	if Separator == '/' && volumeNameLen(path) == 0 {
+		return pathpkg.Clean(path)
+	}
 	originalPath := path
 	volLen := volumeNameLen(path)
 	path = path[volLen:]
