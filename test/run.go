@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"go/build"
+	"go/build/constraint"
 	"hash/fnv"
 	"io"
 	"io/fs"
@@ -57,7 +58,7 @@ type envVars struct {
 }
 
 var env = func() (res envVars) {
-	cmd := exec.Command("go", "env", "-json")
+	cmd := exec.Command(goTool(), "env", "-json")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Fatal("StdoutPipe:", err)
@@ -74,10 +75,14 @@ var env = func() (res envVars) {
 	return
 }()
 
-// TODO(mdempsky): This will give false negatives if the unified
-// experiment is enabled by default, but presumably at that point we
-// won't need to disable tests for it anymore anyway.
-var unifiedEnabled = strings.Contains(","+env.GOEXPERIMENT+",", ",unified,")
+var unifiedEnabled = func() bool {
+	for _, tag := range build.Default.ToolTags {
+		if tag == "goexperiment.unified" {
+			return true
+		}
+	}
+	return false
+}()
 
 // defaultAllCodeGen returns the default value of the -all_codegen
 // flag. By default, we prefer to be fast (returning false), except on
@@ -85,6 +90,10 @@ var unifiedEnabled = strings.Contains(","+env.GOEXPERIMENT+",", ",unified,")
 // test coverage on trybots. See https://golang.org/issue/34297.
 func defaultAllCodeGen() bool {
 	return os.Getenv("GO_BUILDER_NAME") == "linux-amd64"
+}
+
+func optimizationOff() bool {
+	return strings.HasSuffix(os.Getenv("GO_BUILDER_NAME"), "-noopt")
 }
 
 var (
@@ -312,8 +321,8 @@ type test struct {
 	err     error
 
 	// expectFail indicates whether the (overall) test recipe is
-	// expected to fail under the current test configuration (e.g., -G=3
-	// or GOEXPERIMENT=unified).
+	// expected to fail under the current test configuration (e.g.,
+	// GOEXPERIMENT=unified).
 	expectFail bool
 }
 
@@ -333,10 +342,8 @@ func (t *test) initExpectFail() {
 		failureSets = append(failureSets, types2Failures32Bit)
 	}
 
-	if unifiedEnabled {
-		failureSets = append(failureSets, unifiedFailures)
-	} else {
-		failureSets = append(failureSets, g3Failures)
+	if !unifiedEnabled {
+		failureSets = append(failureSets, go118Failures)
 	}
 
 	filename := strings.Replace(t.goFileName(), "\\", "/", -1) // goFileName() uses \ on Windows
@@ -462,56 +469,30 @@ func shouldTest(src string, goos, goarch string) (ok bool, whyNot string) {
 		return true, ""
 	}
 	for _, line := range strings.Split(src, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "//") {
-			line = line[2:]
-		} else {
-			continue
-		}
-		line = strings.TrimSpace(line)
-		if len(line) == 0 || line[0] != '+' {
-			continue
-		}
-		gcFlags := os.Getenv("GO_GCFLAGS")
-		ctxt := &context{
-			GOOS:       goos,
-			GOARCH:     goarch,
-			cgoEnabled: cgoEnabled,
-			noOptEnv:   strings.Contains(gcFlags, "-N") || strings.Contains(gcFlags, "-l"),
+		if strings.HasPrefix(line, "package ") {
+			break
 		}
 
-		words := strings.Fields(line)
-		if words[0] == "+build" {
-			ok := false
-			for _, word := range words[1:] {
-				if ctxt.match(word) {
-					ok = true
-					break
-				}
+		if expr, err := constraint.Parse(line); err == nil {
+			gcFlags := os.Getenv("GO_GCFLAGS")
+			ctxt := &context{
+				GOOS:       goos,
+				GOARCH:     goarch,
+				cgoEnabled: cgoEnabled,
+				noOptEnv:   strings.Contains(gcFlags, "-N") || strings.Contains(gcFlags, "-l"),
 			}
-			if !ok {
-				// no matching tag found.
+
+			if !expr.Eval(ctxt.match) {
 				return false, line
 			}
 		}
 	}
-	// no build tags
 	return true, ""
 }
 
 func (ctxt *context) match(name string) bool {
 	if name == "" {
 		return false
-	}
-	if first, rest, ok := strings.Cut(name, ","); ok {
-		// comma-separated list
-		return ctxt.match(first) && ctxt.match(rest)
-	}
-	if strings.HasPrefix(name, "!!") { // bad syntax, reject always
-		return false
-	}
-	if strings.HasPrefix(name, "!") { // negation
-		return len(name) > 1 && !ctxt.match(name[1:])
 	}
 
 	// Tags must be letters, digits, underscores or dots.
@@ -550,7 +531,9 @@ func (ctxt *context) match(name string) bool {
 	return false
 }
 
-func init() { checkShouldTest() }
+func init() {
+	checkShouldTest()
+}
 
 // goGcflags returns the -gcflags argument to use with go build / go run.
 // This must match the flags used for building the standard library,
@@ -735,6 +718,22 @@ func (t *test) run() {
 		if tempDirIsGOPATH {
 			cmd.Env = append(cmd.Env, "GOPATH="+t.tempDir)
 		}
+		// Put the bin directory of the GOROOT that built this program
+		// first in the path. This ensures that tests that use the "go"
+		// tool use the same one that built this program. This ensures
+		// that if you do "../bin/go run run.go" in this directory, all
+		// the tests that start subprocesses that "go tool compile" or
+		// whatever, use ../bin/go as their go tool, not whatever happens
+		// to be first in the user's path.
+		path := os.Getenv("PATH")
+		newdir := filepath.Join(runtime.GOROOT(), "bin")
+		if path != "" {
+			path = newdir + string(filepath.ListSeparator) + path
+		} else {
+			path = newdir
+		}
+		cmd.Env = append(cmd.Env, "PATH="+path)
+
 		cmd.Env = append(cmd.Env, runenv...)
 
 		var err error
@@ -1018,7 +1017,10 @@ func (t *test) run() {
 
 	case "build":
 		// Build Go file.
-		_, err := runcmd(goTool(), "build", t.goGcflags(), "-o", "a.exe", long)
+		cmd := []string{goTool(), "build", t.goGcflags()}
+		cmd = append(cmd, flags...)
+		cmd = append(cmd, "-o", "a.exe", long)
+		_, err := runcmd(cmd...)
 		if err != nil {
 			t.err = err
 		}
@@ -1049,7 +1051,7 @@ func (t *test) run() {
 				t.err = fmt.Errorf("write empty go_asm.h: %s", err)
 				return
 			}
-			cmd := []string{goTool(), "tool", "asm", "-gensymabis", "-o", "symabis"}
+			cmd := []string{goTool(), "tool", "asm", "-p=main", "-gensymabis", "-o", "symabis"}
 			cmd = append(cmd, asms...)
 			_, err = runcmd(cmd...)
 			if err != nil {
@@ -1070,7 +1072,7 @@ func (t *test) run() {
 		}
 		objs = append(objs, "go.o")
 		if len(asms) > 0 {
-			cmd = []string{goTool(), "tool", "asm", "-e", "-I", ".", "-o", "asm.o"}
+			cmd = []string{goTool(), "tool", "asm", "-p=main", "-e", "-I", ".", "-o", "asm.o"}
 			cmd = append(cmd, asms...)
 			_, err = runcmd(cmd...)
 			if err != nil {
@@ -1423,7 +1425,7 @@ func (t *test) updateErrors(out, file string) {
 	}
 	// Parse new errors.
 	errors := make(map[int]map[string]bool)
-	tmpRe := regexp.MustCompile(`autotmp_[0-9]+`)
+	tmpRe := regexp.MustCompile(`autotmp_\d+`)
 	for _, errStr := range splitOutput(out, false) {
 		errFile, rest, ok := strings.Cut(errStr, ":")
 		if !ok || errFile != file {
@@ -1516,7 +1518,7 @@ var (
 	errRx       = regexp.MustCompile(`// (?:GC_)?ERROR (.*)`)
 	errAutoRx   = regexp.MustCompile(`// (?:GC_)?ERRORAUTO (.*)`)
 	errQuotesRx = regexp.MustCompile(`"([^"]*)"`)
-	lineRx      = regexp.MustCompile(`LINE(([+-])([0-9]+))?`)
+	lineRx      = regexp.MustCompile(`LINE(([+-])(\d+))?`)
 )
 
 func (t *test) wantedErrors(file, short string) (errs []wantedError) {
@@ -1607,6 +1609,7 @@ var (
 		"amd64":   {"GOAMD64", "v1", "v2", "v3", "v4"},
 		"arm":     {"GOARM", "5", "6", "7"},
 		"arm64":   {},
+		"loong64": {},
 		"mips":    {"GOMIPS", "hardfloat", "softfloat"},
 		"mips64":  {"GOMIPS64", "hardfloat", "softfloat"},
 		"ppc64":   {"GOPPC64", "power8", "power9"},
@@ -1888,14 +1891,6 @@ func checkShouldTest() {
 	assert(shouldTest("// +build !windows !plan9", "windows", "amd64"))
 }
 
-func getenv(key, def string) string {
-	value := os.Getenv(key)
-	if value != "" {
-		return value
-	}
-	return def
-}
-
 // overlayDir makes a minimal-overhead copy of srcRoot in which new files may be added.
 func overlayDir(dstRoot, srcRoot string) error {
 	dstRoot = filepath.Clean(dstRoot)
@@ -1961,26 +1956,21 @@ func overlayDir(dstRoot, srcRoot string) error {
 	})
 }
 
-// The following is temporary scaffolding to get types2 typechecker
-// up and running against the existing test cases. The explicitly
-// listed files don't pass yet, usually because the error messages
-// are slightly different (this list is not complete). Any errorcheck
-// tests that require output from analysis phases past initial type-
-// checking are also excluded since these phases are not running yet.
-// We can get rid of this code once types2 is fully plugged in.
+// The following sets of files are excluded from testing depending on configuration.
+// The types2Failures(32Bit) files pass with the 1.17 compiler but don't pass with
+// the 1.18 compiler using the new types2 type checker, or pass with sub-optimal
+// error(s).
 
-// List of files that the compiler cannot errorcheck with the new typechecker (compiler -G option).
-// Temporary scaffolding until we pass all the tests at which point this map can be removed.
+// List of files that the compiler cannot errorcheck with the new typechecker (types2).
 var types2Failures = setOf(
-	"notinheap.go",            // types2 doesn't report errors about conversions that are invalid due to //go:notinheap
 	"shift1.go",               // types2 reports two new errors which are probably not right
 	"fixedbugs/issue10700.go", // types2 should give hint about ptr to interface
 	"fixedbugs/issue18331.go", // missing error about misuse of //go:noescape (irgen needs code from noder)
 	"fixedbugs/issue18419.go", // types2 reports no field or method member, but should say unexported
-	"fixedbugs/issue20233.go", // types2 reports two instead of one error (pref: -G=0)
-	"fixedbugs/issue20245.go", // types2 reports two instead of one error (pref: -G=0)
-	"fixedbugs/issue28268.go", // types2 reports follow-on errors (pref: -G=0)
+	"fixedbugs/issue20233.go", // types2 reports two instead of one error (preference: 1.17 compiler)
+	"fixedbugs/issue20245.go", // types2 reports two instead of one error (preference: 1.17 compiler)
 	"fixedbugs/issue31053.go", // types2 reports "unknown field" instead of "cannot refer to unexported field"
+	"fixedbugs/notinheap.go",  // types2 doesn't report errors about conversions that are invalid due to //go:notinheap
 )
 
 var types2Failures32Bit = setOf(
@@ -1989,15 +1979,25 @@ var types2Failures32Bit = setOf(
 	"fixedbugs/issue23305.go", // large untyped int passed to println (32-bit)
 )
 
-var g3Failures = setOf(
-	"typeparam/nested.go",     // -G=3 doesn't support function-local types with generics
-	"typeparam/issue51521.go", // -G=3 produces bad panic message and link error
+var go118Failures = setOf(
+	"fixedbugs/issue54343.go",  // 1.18 compiler assigns receiver parameter to global variable
+	"typeparam/nested.go",      // 1.18 compiler doesn't support function-local types with generics
+	"typeparam/issue47631.go",  // 1.18 can not handle local type declarations
+	"typeparam/issue51521.go",  // 1.18 compiler produces bad panic message and link error
+	"typeparam/issue54456.go",  // 1.18 compiler fails to distinguish local generic types
+	"typeparam/issue54497.go",  // 1.18 compiler is more conservative about inlining due to repeated issues
+	"typeparam/issue55101.go",  // 1.18 compiler ICEs writing export data
+	"typeparam/mdempsky/16.go", // 1.18 compiler uses interface shape type in failed type assertions
+	"typeparam/mdempsky/17.go", // 1.18 compiler mishandles implicit conversions from range loops
+	"typeparam/mdempsky/18.go", // 1.18 compiler mishandles implicit conversions in select statements
+	"typeparam/mdempsky/20.go", // 1.18 compiler crashes on method expressions promoted to derived types
 )
 
-// In all of these cases, -G=0 reports reasonable errors, but either -G=0 or types2
-// report extra errors, so we can't match correctly on both. We now set the patterns
-// to match correctly on all the types2 errors.
-var g0Failures = setOf(
+// In all of these cases, the 1.17 compiler reports reasonable errors, but either the
+// 1.17 or 1.18 compiler report extra errors, so we can't match correctly on both. We
+// now set the patterns to match correctly on all the 1.18 errors.
+// This list remains here just as a reference and for comparison - these files all pass.
+var _ = setOf(
 	"import1.go",      // types2 reports extra errors
 	"initializerr.go", // types2 reports extra error
 	"typecheck.go",    // types2 reports extra error at function call
@@ -2015,21 +2015,6 @@ var g0Failures = setOf(
 	"fixedbugs/issue7525d.go", // types2 reports init cycle error on different line - ok otherwise
 	"fixedbugs/issue7525e.go", // types2 reports init cycle error on different line - ok otherwise
 	"fixedbugs/issue7525.go",  // types2 reports init cycle error on different line - ok otherwise
-)
-
-var unifiedFailures = setOf(
-	"closure3.go",  // unified IR numbers closures differently than -d=inlfuncswithclosures
-	"escape4.go",   // unified IR can inline f5 and f6; test doesn't expect this
-	"inline.go",    // unified IR reports function literal diagnostics on different lines than -d=inlfuncswithclosures
-	"linkname3.go", // unified IR is missing some linkname errors
-
-	"fixedbugs/issue42284.go",  // prints "T(0) does not escape", but test expects "a.I(a.T(0)) does not escape"
-	"fixedbugs/issue7921.go",   // prints "… escapes to heap", but test expects "string(…) escapes to heap"
-	"typeparam/issue47631.go",  // unified IR can handle local type declarations
-	"fixedbugs/issue42058a.go", // unified IR doesn't report channel element too large
-	"fixedbugs/issue42058b.go", // unified IR doesn't report channel element too large
-	"fixedbugs/issue49767.go",  // unified IR doesn't report channel element too large
-	"fixedbugs/issue49814.go",  // unified IR doesn't report array type too large
 )
 
 func setOf(keys ...string) map[string]bool {
@@ -2050,11 +2035,11 @@ func setOf(keys ...string) map[string]bool {
 //
 // For example, the following string:
 //
-//     a b:"c d" 'e''f'  "g\""
+//	a b:"c d" 'e''f'  "g\""
 //
 // Would be parsed as:
 //
-//     []string{"a", "b:c d", "ef", `g"`}
+//	[]string{"a", "b:c d", "ef", `g"`}
 //
 // [copied from src/go/build/build.go]
 func splitQuoted(s string) (r []string, err error) {

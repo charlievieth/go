@@ -7,7 +7,7 @@
 // The calendrical calculations always assume a Gregorian calendar, with
 // no leap seconds.
 //
-// Monotonic Clocks
+// # Monotonic Clocks
 //
 // Operating systems provide both a “wall clock,” which is subject to
 // changes for clock synchronization, and a “monotonic clock,” which is
@@ -46,7 +46,7 @@
 // The canonical way to strip a monotonic clock reading is to use t = t.Round(0).
 //
 // If Times t and u both contain monotonic clock readings, the operations
-// t.After(u), t.Before(u), t.Equal(u), and t.Sub(u) are carried out
+// t.After(u), t.Before(u), t.Equal(u), t.Compare(u), and t.Sub(u) are carried out
 // using the monotonic clock readings alone, ignoring the wall clock
 // readings. If either t or u contains no monotonic clock reading, these
 // operations fall back to using the wall clock readings.
@@ -64,6 +64,10 @@
 // t.UnmarshalJSON, and t.UnmarshalText always create times with
 // no monotonic clock reading.
 //
+// The monotonic clock reading exists only in Time values. It is not
+// a part of Duration values or the Unix times returned by t.Unix and
+// friends.
+//
 // Note that the Go == operator compares not just the time instant but
 // also the Location and the monotonic clock reading. See the
 // documentation for the Time type for a discussion of equality
@@ -72,7 +76,6 @@
 // For debugging, the result of t.String does include the monotonic
 // clock reading if present. If t != u because of different monotonic clock readings,
 // that difference will be visible when printing t.String() and u.String().
-//
 package time
 
 import (
@@ -123,7 +126,6 @@ import (
 // to t == u, since t.Equal uses the most accurate comparison available and
 // correctly handles the case when only one of its arguments has a monotonic
 // clock reading.
-//
 type Time struct {
 	// wall and ext encode the wall time seconds, wall time nanoseconds,
 	// and optional monotonic clock reading in nanoseconds.
@@ -262,6 +264,27 @@ func (t Time) Before(u Time) bool {
 	ts := t.sec()
 	us := u.sec()
 	return ts < us || ts == us && t.nsec() < u.nsec()
+}
+
+// Compare compares the time instant t with u. If t is before u, it returns -1;
+// if t is after u, it returns +1; if they're the same, it returns 0.
+func (t Time) Compare(u Time) int {
+	var tc, uc int64
+	if t.wall&u.wall&hasMonotonic != 0 {
+		tc, uc = t.ext, u.ext
+	} else {
+		tc, uc = t.sec(), u.sec()
+		if tc == uc {
+			tc, uc = int64(t.nsec()), int64(u.nsec())
+		}
+	}
+	switch {
+	case tc < uc:
+		return -1
+	case tc > uc:
+		return +1
+	}
+	return 0
 }
 
 // Equal reports whether t and u represent the same time instant.
@@ -597,13 +620,14 @@ const (
 // to avoid confusion across daylight savings time zone transitions.
 //
 // To count the number of units in a Duration, divide:
+//
 //	second := time.Second
 //	fmt.Print(int64(second/time.Millisecond)) // prints 1000
 //
 // To convert an integer number of units to a Duration, multiply:
+//
 //	seconds := 10
 //	fmt.Print(time.Duration(seconds)*time.Second) // prints 10s
-//
 const (
 	Nanosecond  Duration = 1
 	Microsecond          = 1000 * Nanosecond
@@ -1070,6 +1094,7 @@ func daysSinceEpoch(year int) uint64 {
 func now() (sec int64, nsec int32, mono int64)
 
 // runtimeNano returns the current value of the runtime clock in nanoseconds.
+//
 //go:linkname runtimeNano runtime.nanotime
 func runtimeNano() int64
 
@@ -1087,6 +1112,9 @@ func Now() Time {
 	mono -= startNano
 	sec += unixToInternal - minWall
 	if uint64(sec)>>33 != 0 {
+		// Seconds field overflowed the 33 bits available when
+		// storing a monotonic time. This will be true after
+		// March 16, 2157.
 		return Time{uint64(nsec), sec + minWall, Local}
 	}
 	return Time{hasMonotonic | uint64(sec)<<nsecShift | uint64(nsec), mono, Local}
@@ -1134,6 +1162,24 @@ func (t Time) Location() *Location {
 // name of the zone (such as "CET") and its offset in seconds east of UTC.
 func (t Time) Zone() (name string, offset int) {
 	name, offset, _, _, _ = t.loc.lookup(t.unixSec())
+	return
+}
+
+// ZoneBounds returns the bounds of the time zone in effect at time t.
+// The zone begins at start and the next zone begins at end.
+// If the zone begins at the beginning of time, start will be returned as a zero Time.
+// If the zone goes on forever, end will be returned as a zero Time.
+// The Location of the returned times will be the same as t.
+func (t Time) ZoneBounds() (start, end Time) {
+	_, _, startSec, endSec, _ := t.loc.lookup(t.unixSec())
+	if startSec != alpha {
+		start = unixTime(startSec, 0)
+		start.setLoc(t.loc)
+	}
+	if endSec != omega {
+		end = unixTime(endSec, 0)
+		end.setLoc(t.loc)
+	}
 	return
 }
 
@@ -1380,6 +1426,7 @@ func isLeap(year int) bool {
 }
 
 // norm returns nhi, nlo such that
+//
 //	hi * base + lo == nhi * base + nlo
 //	0 <= nlo < base
 func norm(hi, lo, base int) (nhi, nlo int) {
@@ -1397,7 +1444,9 @@ func norm(hi, lo, base int) (nhi, nlo int) {
 }
 
 // Date returns the Time corresponding to
+//
 //	yyyy-mm-dd hh:mm:ss + nsec nanoseconds
+//
 // in the appropriate zone for that time in the given location.
 //
 // The month, day, hour, min, sec, and nsec values may be outside

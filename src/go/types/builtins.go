@@ -16,7 +16,6 @@ import (
 // reports whether the call is valid, with *x holding the result;
 // but x.expr is not set. If the call is invalid, the result is
 // false, and *x is undefined.
-//
 func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ bool) {
 	// append is the only built-in that permits the use of ... for the last argument
 	bin := predeclaredFuncs[id]
@@ -605,7 +604,7 @@ func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ b
 	case _Add:
 		// unsafe.Add(ptr unsafe.Pointer, len IntegerType) unsafe.Pointer
 		if !check.allowVersion(check.pkg, 1, 17) {
-			check.errorf(call.Fun, _InvalidUnsafeAdd, "unsafe.Add requires go1.17 or later")
+			check.errorf(call.Fun, _UnsupportedFeature, "unsafe.Add requires go1.17 or later")
 			return
 		}
 
@@ -633,7 +632,7 @@ func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ b
 			return
 		}
 
-		if hasVarSize(x.typ) {
+		if hasVarSize(x.typ, nil) {
 			x.mode = value
 			if check.Types != nil {
 				check.recordBuiltinType(call.Fun, makeSig(Typ[Uintptr], x.typ))
@@ -697,7 +696,7 @@ func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ b
 		// the part of the struct which is variable-sized. This makes both the rules
 		// simpler and also permits (or at least doesn't prevent) a compiler from re-
 		// arranging struct fields if it wanted to.
-		if hasVarSize(base) {
+		if hasVarSize(base, nil) {
 			x.mode = value
 			if check.Types != nil {
 				check.recordBuiltinType(call.Fun, makeSig(Typ[Uintptr], obj.Type()))
@@ -716,7 +715,7 @@ func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ b
 			return
 		}
 
-		if hasVarSize(x.typ) {
+		if hasVarSize(x.typ, nil) {
 			x.mode = value
 			if check.Types != nil {
 				check.recordBuiltinType(call.Fun, makeSig(Typ[Uintptr], x.typ))
@@ -731,12 +730,12 @@ func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ b
 	case _Slice:
 		// unsafe.Slice(ptr *T, len IntegerType) []T
 		if !check.allowVersion(check.pkg, 1, 17) {
-			check.errorf(call.Fun, _InvalidUnsafeSlice, "unsafe.Slice requires go1.17 or later")
+			check.errorf(call.Fun, _UnsupportedFeature, "unsafe.Slice requires go1.17 or later")
 			return
 		}
 
-		typ, _ := under(x.typ).(*Pointer)
-		if typ == nil {
+		ptr, _ := under(x.typ).(*Pointer) // TODO(gri) should this be coreType rather than under?
+		if ptr == nil {
 			check.invalidArg(x, _InvalidUnsafeSlice, "%s is not a pointer", x)
 			return
 		}
@@ -748,9 +747,70 @@ func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ b
 		}
 
 		x.mode = value
-		x.typ = NewSlice(typ.base)
+		x.typ = NewSlice(ptr.base)
 		if check.Types != nil {
-			check.recordBuiltinType(call.Fun, makeSig(x.typ, typ, y.typ))
+			check.recordBuiltinType(call.Fun, makeSig(x.typ, ptr, y.typ))
+		}
+
+	case _SliceData:
+		// unsafe.SliceData(slice []T) *T
+		if !check.allowVersion(check.pkg, 1, 20) {
+			check.errorf(call.Fun, _UnsupportedFeature, "unsafe.SliceData requires go1.20 or later")
+			return
+		}
+
+		slice, _ := under(x.typ).(*Slice) // TODO(gri) should this be coreType rather than under?
+		if slice == nil {
+			check.invalidArg(x, _InvalidUnsafeSliceData, "%s is not a slice", x)
+			return
+		}
+
+		x.mode = value
+		x.typ = NewPointer(slice.elem)
+		if check.Types != nil {
+			check.recordBuiltinType(call.Fun, makeSig(x.typ, slice))
+		}
+
+	case _String:
+		// unsafe.String(ptr *byte, len IntegerType) string
+		if !check.allowVersion(check.pkg, 1, 20) {
+			check.errorf(call.Fun, _UnsupportedFeature, "unsafe.String requires go1.20 or later")
+			return
+		}
+
+		check.assignment(x, NewPointer(universeByte), "argument to unsafe.String")
+		if x.mode == invalid {
+			return
+		}
+
+		var y operand
+		arg(&y, 1)
+		if !check.isValidIndex(&y, _InvalidUnsafeString, "length", false) {
+			return
+		}
+
+		x.mode = value
+		x.typ = Typ[String]
+		if check.Types != nil {
+			check.recordBuiltinType(call.Fun, makeSig(x.typ, NewPointer(universeByte), y.typ))
+		}
+
+	case _StringData:
+		// unsafe.StringData(str string) *byte
+		if !check.allowVersion(check.pkg, 1, 20) {
+			check.errorf(call.Fun, _UnsupportedFeature, "unsafe.StringData requires go1.20 or later")
+			return
+		}
+
+		check.assignment(x, Typ[String], "argument to unsafe.StringData")
+		if x.mode == invalid {
+			return
+		}
+
+		x.mode = value
+		x.typ = NewPointer(universeByte)
+		if check.Types != nil {
+			check.recordBuiltinType(call.Fun, makeSig(x.typ, Typ[String]))
 		}
 
 	case _Assert:
@@ -798,14 +858,32 @@ func (check *Checker) builtin(x *operand, call *ast.CallExpr, id builtinId) (_ b
 	return true
 }
 
-// hasVarSize reports if the size of type t is variable due to type parameters.
-func hasVarSize(t Type) bool {
+// hasVarSize reports if the size of type t is variable due to type parameters
+// or if the type is infinitely-sized due to a cycle for which the type has not
+// yet been checked.
+func hasVarSize(t Type, seen map[*Named]bool) (varSized bool) {
+	// Cycles are only possible through *Named types.
+	// The seen map is used to detect cycles and track
+	// the results of previously seen types.
+	if named, _ := t.(*Named); named != nil {
+		if v, ok := seen[named]; ok {
+			return v
+		}
+		if seen == nil {
+			seen = make(map[*Named]bool)
+		}
+		seen[named] = true // possibly cyclic until proven otherwise
+		defer func() {
+			seen[named] = varSized // record final determination for named
+		}()
+	}
+
 	switch u := under(t).(type) {
 	case *Array:
-		return hasVarSize(u.elem)
+		return hasVarSize(u.elem, seen)
 	case *Struct:
 		for _, f := range u.fields {
-			if hasVarSize(f.typ) {
+			if hasVarSize(f.typ, seen) {
 				return true
 			}
 		}

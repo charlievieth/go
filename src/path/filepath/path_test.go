@@ -46,6 +46,8 @@ var cleantests = []PathTest{
 	{"../", ".."},
 	{"../../", "../.."},
 	{"/abc/", "/abc"},
+	{".//", "."},
+	{"//", "/"},
 
 	// Remove doubled slash
 	{"abc//def//ghi", "abc/def/ghi"},
@@ -58,6 +60,8 @@ var cleantests = []PathTest{
 	{"abc/./def", "abc/def"},
 	{"/./abc/def", "/abc/def"},
 	{"abc/.", "abc"},
+	{"././a", "a"},
+	{"a/././b", "a/b"},
 
 	// Remove .. elements
 	{"abc/def/ghi/../jkl", "abc/def/jkl"},
@@ -69,11 +73,16 @@ var cleantests = []PathTest{
 	{"/abc/def/../../..", "/"},
 	{"abc/def/../../../ghi/jkl/../../../mno", "../../mno"},
 	{"/../abc", "/abc"},
+	{"/qux/../quux/foobar.com/baz", "/quux/foobar.com/baz"}, // TestRedirect
+	{"/../", "/"},
 
 	// Combinations
 	{"abc/./../def", "def"},
 	{"abc//./../def", "def"},
 	{"abc/../../././../def", "../../def"},
+
+	// Ignore "..."
+	{"example.../b@upgrade", "example.../b@upgrade"},
 }
 
 var wincleantests = []PathTest{
@@ -93,6 +102,9 @@ var wincleantests = []PathTest{
 	{`//host/share/foo/../baz`, `\\host\share\baz`},
 	{`\\a\b\..\c`, `\\a\b\c`},
 	{`\\a\b`, `\\a\b`},
+	{`.\c:`, `.\c:`},
+	{`.\c:\foo`, `.\c:\foo`},
+	{`.\c:foo`, `.\c:foo`},
 }
 
 func TestClean(t *testing.T) {
@@ -262,6 +274,8 @@ var jointests = []JoinTest{
 
 	// three parameters
 	{[]string{"/", "a", "b"}, "/a/b"},
+
+	{[]string{"dotname", "./", ".dot"}, "dotname/.dot"},
 }
 
 var winjointests = []JoinTest{
@@ -630,6 +644,64 @@ func TestWalkSkipDirOnFile(t *testing.T) {
 	})
 	t.Run("WalkDir", func(t *testing.T) {
 		WalkDir := func(root string) error { return filepath.WalkDir(td, walkDirFn) }
+		check(t, WalkDir, td)
+		check(t, WalkDir, filepath.Join(td, "dir"))
+	})
+}
+
+func TestWalkSkipAllOnFile(t *testing.T) {
+	td := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(td, "dir", "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(td, "dir2"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	touch(t, filepath.Join(td, "dir", "foo1"))
+	touch(t, filepath.Join(td, "dir", "foo2"))
+	touch(t, filepath.Join(td, "dir", "subdir", "foo3"))
+	touch(t, filepath.Join(td, "dir", "foo4"))
+	touch(t, filepath.Join(td, "dir2", "bar"))
+	touch(t, filepath.Join(td, "last"))
+
+	remainingWereSkipped := true
+	walker := func(path string) error {
+		if strings.HasSuffix(path, "foo2") {
+			return filepath.SkipAll
+		}
+
+		if strings.HasSuffix(path, "foo3") ||
+			strings.HasSuffix(path, "foo4") ||
+			strings.HasSuffix(path, "bar") ||
+			strings.HasSuffix(path, "last") {
+			remainingWereSkipped = false
+		}
+		return nil
+	}
+
+	walkFn := func(path string, _ fs.FileInfo, _ error) error { return walker(path) }
+	walkDirFn := func(path string, _ fs.DirEntry, _ error) error { return walker(path) }
+
+	check := func(t *testing.T, walk func(root string) error, root string) {
+		t.Helper()
+		remainingWereSkipped = true
+		if err := walk(root); err != nil {
+			t.Fatal(err)
+		}
+		if !remainingWereSkipped {
+			t.Errorf("SkipAll on file foo2 did not block processing of remaining files and directories")
+		}
+	}
+
+	t.Run("Walk", func(t *testing.T) {
+		Walk := func(_ string) error { return filepath.Walk(td, walkFn) }
+		check(t, Walk, td)
+		check(t, Walk, filepath.Join(td, "dir"))
+	})
+	t.Run("WalkDir", func(t *testing.T) {
+		WalkDir := func(_ string) error { return filepath.WalkDir(td, walkDirFn) }
 		check(t, WalkDir, td)
 		check(t, WalkDir, filepath.Join(td, "dir"))
 	})
@@ -1560,4 +1632,25 @@ func TestIssue51617(t *testing.T) {
 	if !reflect.DeepEqual(saw, want) {
 		t.Errorf("got directories %v, want %v", saw, want)
 	}
+}
+
+func BenchmarkClean(b *testing.B) {
+	b.Run("Clean", func(b *testing.B) {
+		path := "/home/user/go/src/golang.org/x/tools/gopls"
+		if runtime.GOOS == "windows" {
+			path = "C:" + filepath.FromSlash(path)
+		}
+		for i := 0; i < b.N; i++ {
+			filepath.Clean(path)
+		}
+	})
+	b.Run("Dirty", func(b *testing.B) {
+		path := "/home/user/go/src/../src/golang.org/x/tools/gopls/"
+		if runtime.GOOS == "windows" {
+			path = "C:" + filepath.FromSlash(path)
+		}
+		for i := 0; i < b.N; i++ {
+			filepath.Clean(path)
+		}
+	})
 }

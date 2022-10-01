@@ -32,6 +32,7 @@ const trimPathGoRootFinal string = "$GOROOT"
 var runtimePackages = map[string]struct{}{
 	"internal/abi":            struct{}{},
 	"internal/bytealg":        struct{}{},
+	"internal/coverage/rtcov": struct{}{},
 	"internal/cpu":            struct{}{},
 	"internal/goarch":         struct{}{},
 	"internal/goos":           struct{}{},
@@ -138,6 +139,9 @@ func (gcToolchain) gc(b *Builder, a *Action, archive string, importcfg, embedcfg
 	}
 	if strings.HasPrefix(RuntimeVersion, "go1") && !strings.Contains(os.Args[0], "go_bootstrap") {
 		defaultGcFlags = append(defaultGcFlags, "-goversion", RuntimeVersion)
+	}
+	if p.Internal.CoverageCfg != "" {
+		defaultGcFlags = append(defaultGcFlags, "-coveragecfg="+p.Internal.CoverageCfg)
 	}
 	if symabis != "" {
 		defaultGcFlags = append(defaultGcFlags, "-symabis", symabis)

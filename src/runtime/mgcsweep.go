@@ -177,7 +177,8 @@ func (a *activeSweep) end(sl sweepLocker) {
 				return
 			}
 			if debug.gcpacertrace > 0 {
-				print("pacer: sweep done at heap size ", gcController.heapLive>>20, "MB; allocated ", (gcController.heapLive-mheap_.sweepHeapLiveBasis)>>20, "MB during sweep; swept ", mheap_.pagesSwept.Load(), " pages at ", mheap_.sweepPagesPerByte, " pages/byte\n")
+				live := gcController.heapLive.Load()
+				print("pacer: sweep done at heap size ", live>>20, "MB; allocated ", (live-mheap_.sweepHeapLiveBasis)>>20, "MB during sweep; swept ", mheap_.pagesSwept.Load(), " pages at ", mheap_.sweepPagesPerByte, " pages/byte\n")
 			}
 			return
 		}
@@ -263,7 +264,7 @@ func finishsweep_m() {
 	// Sweeping is done, so if the scavenger isn't already awake,
 	// wake it up. There's definitely work for it to do at this
 	// point.
-	wakeScavenger()
+	scavenger.wake()
 
 	nextMarkBitArenaEpoch()
 }
@@ -278,12 +279,34 @@ func bgsweep(c chan int) {
 	goparkunlock(&sweep.lock, waitReasonGCSweepWait, traceEvGoBlock, 1)
 
 	for {
+		// bgsweep attempts to be a "low priority" goroutine by intentionally
+		// yielding time. It's OK if it doesn't run, because goroutines allocating
+		// memory will sweep and ensure that all spans are swept before the next
+		// GC cycle. We really only want to run when we're idle.
+		//
+		// However, calling Gosched after each span swept produces a tremendous
+		// amount of tracing events, sometimes up to 50% of events in a trace. It's
+		// also inefficient to call into the scheduler so much because sweeping a
+		// single span is in general a very fast operation, taking as little as 30 ns
+		// on modern hardware. (See #54767.)
+		//
+		// As a result, bgsweep sweeps in batches, and only calls into the scheduler
+		// at the end of every batch. Furthermore, it only yields its time if there
+		// isn't spare idle time available on other cores. If there's available idle
+		// time, helping to sweep can reduce allocation latencies by getting ahead of
+		// the proportional sweeper and having spans ready to go for allocation.
+		const sweepBatchSize = 10
+		nSwept := 0
 		for sweepone() != ^uintptr(0) {
 			sweep.nbgsweep++
-			Gosched()
+			nSwept++
+			if nSwept%sweepBatchSize == 0 {
+				goschedIfBusy()
+			}
 		}
 		for freeSomeWbufs(true) {
-			Gosched()
+			// N.B. freeSomeWbufs is already batched internally.
+			goschedIfBusy()
 		}
 		lock(&sweep.lock)
 		if !isSweepDone() {
@@ -387,7 +410,7 @@ func sweepone() uintptr {
 		// concurrent sweeps running, but we're at least very
 		// close to done sweeping.
 
-		// Move the scavenge gen forward (signalling
+		// Move the scavenge gen forward (signaling
 		// that there's new work to do) and wake the scavenger.
 		//
 		// The scavenger is signaled by the last sweeper because once
@@ -398,15 +421,16 @@ func sweepone() uintptr {
 		// between sweep done and sweep termination (e.g. not enough
 		// allocations to trigger a GC) which would be nice to fill in
 		// with scavenging work.
-		systemstack(func() {
-			lock(&mheap_.lock)
-			mheap_.pages.scavengeStartGen()
-			unlock(&mheap_.lock)
-		})
-		// Since we might sweep in an allocation path, it's not possible
-		// for us to wake the scavenger directly via wakeScavenger, since
-		// it could allocate. Ask sysmon to do it for us instead.
-		readyForScavenger()
+		if debug.scavtrace > 0 {
+			systemstack(func() {
+				lock(&mheap_.lock)
+				released := atomic.Loaduintptr(&mheap_.pages.scav.released)
+				printScavTrace(released, false)
+				atomic.Storeuintptr(&mheap_.pages.scav.released, 0)
+				unlock(&mheap_.lock)
+			})
+		}
+		scavenger.ready()
 	}
 
 	gp.m.locks--
@@ -424,13 +448,14 @@ func isSweepDone() bool {
 }
 
 // Returns only when span s has been swept.
+//
 //go:nowritebarrier
 func (s *mspan) ensureSwept() {
 	// Caller must disable preemption.
 	// Otherwise when this function returns the span can become unswept again
 	// (if GC is triggered on another goroutine).
-	_g_ := getg()
-	if _g_.m.locks == 0 && _g_.m.mallocing == 0 && _g_ != _g_.m.g0 {
+	gp := getg()
+	if gp.m.locks == 0 && gp.m.mallocing == 0 && gp != gp.m.g0 {
 		throw("mspan.ensureSwept: m is not locked")
 	}
 
@@ -468,8 +493,8 @@ func (s *mspan) ensureSwept() {
 func (sl *sweepLocked) sweep(preserve bool) bool {
 	// It's critical that we enter this function with preemption disabled,
 	// GC must not start while we are in the middle of this function.
-	_g_ := getg()
-	if _g_.m.locks == 0 && _g_.m.mallocing == 0 && _g_ != _g_.m.g0 {
+	gp := getg()
+	if gp.m.locks == 0 && gp.m.mallocing == 0 && gp != gp.m.g0 {
 		throw("mspan.sweep: m is not locked")
 	}
 
@@ -666,8 +691,11 @@ func (sl *sweepLocked) sweep(preserve bool) bool {
 			// free slots zeroed.
 			s.needzero = 1
 			stats := memstats.heapStats.acquire()
-			atomic.Xadduintptr(&stats.smallFreeCount[spc.sizeclass()], uintptr(nfreed))
+			atomic.Xadd64(&stats.smallFreeCount[spc.sizeclass()], int64(nfreed))
 			memstats.heapStats.release()
+
+			// Count the frees in the inconsistent, internal stats.
+			gcController.totalFree.Add(int64(nfreed) * int64(s.elemsize))
 		}
 		if !preserve {
 			// The caller may not have removed this span from whatever
@@ -712,10 +740,16 @@ func (sl *sweepLocked) sweep(preserve bool) bool {
 			} else {
 				mheap_.freeSpan(s)
 			}
+
+			// Count the free in the consistent, external stats.
 			stats := memstats.heapStats.acquire()
-			atomic.Xadduintptr(&stats.largeFreeCount, 1)
-			atomic.Xadduintptr(&stats.largeFree, size)
+			atomic.Xadd64(&stats.largeFreeCount, 1)
+			atomic.Xadd64(&stats.largeFree, int64(size))
 			memstats.heapStats.release()
+
+			// Count the free in the inconsistent, internal stats.
+			gcController.totalFree.Add(int64(size))
+
 			return true
 		}
 
@@ -807,7 +841,7 @@ retry:
 	sweptBasis := mheap_.pagesSweptBasis.Load()
 
 	// Fix debt if necessary.
-	newHeapLive := uintptr(atomic.Load64(&gcController.heapLive)-mheap_.sweepHeapLiveBasis) + spanBytes
+	newHeapLive := uintptr(gcController.heapLive.Load()-mheap_.sweepHeapLiveBasis) + spanBytes
 	pagesTarget := int64(mheap_.sweepPagesPerByte*float64(newHeapLive)) - int64(callerSweepPages)
 	for pagesTarget > int64(mheap_.pagesSwept.Load()-sweptBasis) {
 		if sweepone() == ^uintptr(0) {
@@ -851,7 +885,7 @@ func gcPaceSweeper(trigger uint64) {
 		// trigger. Compute the ratio of in-use pages to sweep
 		// per byte allocated, accounting for the fact that
 		// some might already be swept.
-		heapLiveBasis := atomic.Load64(&gcController.heapLive)
+		heapLiveBasis := gcController.heapLive.Load()
 		heapDistance := int64(trigger) - int64(heapLiveBasis)
 		// Add a little margin so rounding errors and
 		// concurrent sweep are less likely to leave pages

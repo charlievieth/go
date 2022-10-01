@@ -16,6 +16,11 @@ import "unsafe"
 
 const _F_DUP2FD_CLOEXEC = F_DUP2FD_CLOEXEC
 
+func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno)
+func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)
+func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno)
+func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)
+
 // Implemented in asm_solaris_amd64.s.
 func rawSysvicall6(trap, nargs, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)
 func sysvicall6(trap, nargs, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)
@@ -64,6 +69,26 @@ func Pipe2(p []int, flags int) error {
 		p[1] = int(pp[1])
 	}
 	return err
+}
+
+//sys   accept4(s int, rsa *RawSockaddrAny, addrlen *_Socklen, flags int) (fd int, err error) = libsocket.accept4
+
+func Accept4(fd int, flags int) (int, Sockaddr, error) {
+	var rsa RawSockaddrAny
+	var addrlen _Socklen = SizeofSockaddrAny
+	nfd, err := accept4(fd, &rsa, &addrlen, flags)
+	if err != nil {
+		return 0, nil, err
+	}
+	if addrlen > SizeofSockaddrAny {
+		panic("RawSockaddrAny too small")
+	}
+	sa, err := anyToSockaddr(&rsa)
+	if err != nil {
+		Close(nfd)
+		return 0, nil, err
+	}
+	return nfd, sa, nil
 }
 
 func (sa *SockaddrInet4) sockaddr() (unsafe.Pointer, _Socklen, error) {
@@ -509,6 +534,20 @@ func writelen(fd int, buf *byte, nbuf int) (n int, err error) {
 		err = e1
 	}
 	return
+}
+
+var mapper = &mmapper{
+	active: make(map[*byte][]byte),
+	mmap:   mmap,
+	munmap: munmap,
+}
+
+func Mmap(fd int, offset int64, length int, prot int, flags int) (data []byte, err error) {
+	return mapper.Mmap(fd, offset, length, prot, flags)
+}
+
+func Munmap(b []byte) (err error) {
+	return mapper.Munmap(b)
 }
 
 func Utimes(path string, tv []Timeval) error {

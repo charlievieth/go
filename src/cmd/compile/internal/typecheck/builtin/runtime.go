@@ -179,10 +179,15 @@ func block()
 func makeslice(typ *byte, len int, cap int) unsafe.Pointer
 func makeslice64(typ *byte, len int64, cap int64) unsafe.Pointer
 func makeslicecopy(typ *byte, tolen int, fromlen int, from unsafe.Pointer) unsafe.Pointer
-func growslice(typ *byte, old []any, cap int) (ary []any)
-func unsafeslice(typ *byte, ptr unsafe.Pointer, len int)
-func unsafeslice64(typ *byte, ptr unsafe.Pointer, len int64)
+func growslice(oldPtr *any, newLen, oldCap, num int, et *byte) (ary []any)
 func unsafeslicecheckptr(typ *byte, ptr unsafe.Pointer, len int64)
+func panicunsafeslicelen()
+func panicunsafeslicenilptr()
+func unsafestringcheckptr(ptr unsafe.Pointer, len int64)
+func panicunsafestringlen()
+func panicunsafestringnilptr()
+
+func mulUintptr(x, y uintptr) (uintptr, bool)
 
 func memmove(to *any, frm *any, length uintptr)
 func memclrNoHeapPointers(ptr unsafe.Pointer, n uintptr)
@@ -257,14 +262,18 @@ func asanwrite(addr, size uintptr)
 func checkptrAlignment(unsafe.Pointer, *byte, uintptr)
 func checkptrArithmetic(unsafe.Pointer, []unsafe.Pointer)
 
-func libfuzzerTraceCmp1(uint8, uint8)
-func libfuzzerTraceCmp2(uint16, uint16)
-func libfuzzerTraceCmp4(uint32, uint32)
-func libfuzzerTraceCmp8(uint64, uint64)
-func libfuzzerTraceConstCmp1(uint8, uint8)
-func libfuzzerTraceConstCmp2(uint16, uint16)
-func libfuzzerTraceConstCmp4(uint32, uint32)
-func libfuzzerTraceConstCmp8(uint64, uint64)
+func libfuzzerTraceCmp1(uint8, uint8, int)
+func libfuzzerTraceCmp2(uint16, uint16, int)
+func libfuzzerTraceCmp4(uint32, uint32, int)
+func libfuzzerTraceCmp8(uint64, uint64, int)
+func libfuzzerTraceConstCmp1(uint8, uint8, int)
+func libfuzzerTraceConstCmp2(uint16, uint16, int)
+func libfuzzerTraceConstCmp4(uint32, uint32, int)
+func libfuzzerTraceConstCmp8(uint64, uint64, int)
+func libfuzzerHookStrCmp(string, string, int)
+func libfuzzerHookEqualFold(string, string, int)
+
+func addCovMeta(p unsafe.Pointer, len uint32, hash [16]byte, pkpath string, pkgId int, cmode uint8, cgran uint8) uint32
 
 // architecture variants
 var x86HasPOPCNT bool

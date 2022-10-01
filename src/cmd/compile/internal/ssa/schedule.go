@@ -14,6 +14,7 @@ const (
 	ScorePhi = iota // towards top of block
 	ScoreArg
 	ScoreNilCheck
+	ScoreCarryChainTail
 	ScoreReadTuple
 	ScoreVarDef
 	ScoreMemory
@@ -78,7 +79,7 @@ func (h ValHeap) Less(i, j int) bool {
 func (op Op) isLoweredGetClosurePtr() bool {
 	switch op {
 	case OpAMD64LoweredGetClosurePtr, OpPPC64LoweredGetClosurePtr, OpARMLoweredGetClosurePtr, OpARM64LoweredGetClosurePtr,
-		Op386LoweredGetClosurePtr, OpMIPS64LoweredGetClosurePtr, OpS390XLoweredGetClosurePtr, OpMIPSLoweredGetClosurePtr,
+		Op386LoweredGetClosurePtr, OpMIPS64LoweredGetClosurePtr, OpLOONG64LoweredGetClosurePtr, OpS390XLoweredGetClosurePtr, OpMIPSLoweredGetClosurePtr,
 		OpRISCV64LoweredGetClosurePtr, OpWasmLoweredGetClosurePtr:
 		return true
 	}
@@ -128,7 +129,8 @@ func schedule(f *Func) {
 				v.Op == OpARMLoweredNilCheck || v.Op == OpARM64LoweredNilCheck ||
 				v.Op == Op386LoweredNilCheck || v.Op == OpMIPS64LoweredNilCheck ||
 				v.Op == OpS390XLoweredNilCheck || v.Op == OpMIPSLoweredNilCheck ||
-				v.Op == OpRISCV64LoweredNilCheck || v.Op == OpWasmLoweredNilCheck:
+				v.Op == OpRISCV64LoweredNilCheck || v.Op == OpWasmLoweredNilCheck ||
+				v.Op == OpLOONG64LoweredNilCheck:
 				// Nil checks must come before loads from the same address.
 				score[v.ID] = ScoreNilCheck
 			case v.Op == OpPhi:
@@ -153,12 +155,34 @@ func schedule(f *Func) {
 				// VARDEF ops are scheduled before the corresponding LEA.
 				score[v.ID] = ScoreMemory
 			case v.Op == OpSelect0 || v.Op == OpSelect1 || v.Op == OpSelectN:
-				// Schedule the pseudo-op of reading part of a tuple
-				// immediately after the tuple-generating op, since
-				// this value is already live. This also removes its
-				// false dependency on the other part of the tuple.
-				// Also ensures tuple is never spilled.
-				score[v.ID] = ScoreReadTuple
+				if (v.Op == OpSelect1 || v.Op == OpSelect0) && (v.Args[0].Op.isCarry() || v.Type.IsFlags()) {
+					// When the Select pseudo op is being used for a carry or flag from
+					// a tuple then score it as ScoreFlags so it happens later. This
+					// prevents the bit from being clobbered before it is used.
+					score[v.ID] = ScoreFlags
+				} else {
+					score[v.ID] = ScoreReadTuple
+				}
+			case v.Op.isCarry():
+				if w := v.getCarryProducer(); w != nil {
+					// The producing op is not the final user of the carry bit. Its
+					// current score is one of unscored, Flags, or CarryChainTail.
+					// These occur if the producer has not been scored, another user
+					// of the producers carry flag was scored (there are >1 users of
+					// the carry out flag), or it was visited earlier and already
+					// scored CarryChainTail (and prove w is not a tail).
+					score[w.ID] = ScoreFlags
+				}
+				// Verify v has not been scored. If v has not been visited, v may be
+				// the final (tail) operation in a carry chain. If v is not, v will be
+				// rescored above when v's carry-using op is scored. When scoring is done,
+				// only tail operations will retain the CarryChainTail score.
+				if score[v.ID] != ScoreFlags {
+					// Score the tail of carry chain operations to a lower (earlier in the
+					// block) priority. This creates a priority inversion which allows only
+					// one chain to be scheduled, if possible.
+					score[v.ID] = ScoreCarryChainTail
+				}
 			case v.Type.IsFlags() || v.Type.IsTuple() && v.Type.FieldType(1).IsFlags():
 				// Schedule flag register generation as late as possible.
 				// This makes sure that we only have one live flags
@@ -263,6 +287,14 @@ func schedule(f *Func) {
 
 			v := heap.Pop(priq).(*Value)
 
+			if f.pass.debug > 1 && score[v.ID] == ScoreCarryChainTail && v.Op.isCarry() {
+				// Add some debugging noise if the chain of carrying ops will not
+				// likely be scheduled without potential carry flag clobbers.
+				if !isCarryChainReady(v, uses) {
+					f.Warnl(v.Pos, "carry chain ending with %v not ready", v)
+				}
+			}
+
 			// Add it to the schedule.
 			// Do not emit tuple-reading ops until we're ready to emit the tuple-generating op.
 			//TODO: maybe remove ReadTuple score above, if it does not help on performance
@@ -338,13 +370,15 @@ func schedule(f *Func) {
 // if v transitively depends on store s, v is ordered after s,
 // otherwise v is ordered before s.
 // Specifically, values are ordered like
-//   store1
-//   NilCheck that depends on store1
-//   other values that depends on store1
-//   store2
-//   NilCheck that depends on store2
-//   other values that depends on store2
-//   ...
+//
+//	store1
+//	NilCheck that depends on store1
+//	other values that depends on store1
+//	store2
+//	NilCheck that depends on store2
+//	other values that depends on store2
+//	...
+//
 // The order of non-store and non-NilCheck values are undefined
 // (not necessarily dependency order). This should be cheaper
 // than a full scheduling as done above.
@@ -515,6 +549,46 @@ func storeOrder(values []*Value, sset *sparseSet, storeNumber []int32) []*Value 
 	}
 
 	return order
+}
+
+// Return whether all dependent carry ops can be scheduled after this.
+func isCarryChainReady(v *Value, uses []int32) bool {
+	// A chain can be scheduled in it's entirety if
+	// the use count of each dependent op is 1. If none,
+	// schedule the first.
+	j := 1 // The first op uses[k.ID] == 0. Dependent ops are always >= 1.
+	for k := v; k != nil; k = k.getCarryProducer() {
+		j += int(uses[k.ID]) - 1
+	}
+	return j == 0
+}
+
+// Return whether op is an operation which produces a carry bit value, but does not consume it.
+func (op Op) isCarryCreator() bool {
+	switch op {
+	case OpPPC64SUBC, OpPPC64ADDC, OpPPC64SUBCconst, OpPPC64ADDCconst:
+		return true
+	}
+	return false
+}
+
+// Return whether op consumes or creates a carry a bit value.
+func (op Op) isCarry() bool {
+	switch op {
+	case OpPPC64SUBE, OpPPC64ADDE, OpPPC64SUBZEzero, OpPPC64ADDZEzero:
+		return true
+	}
+	return op.isCarryCreator()
+}
+
+// Return the producing *Value of the carry bit of this op, or nil if none.
+func (v *Value) getCarryProducer() *Value {
+	if v.Op.isCarry() && !v.Op.isCarryCreator() {
+		// PPC64 carry dependencies are conveyed through their final argument.
+		// Likewise, there is always an OpSelect1 between them.
+		return v.Args[len(v.Args)-1].Args[0]
+	}
+	return nil
 }
 
 type bySourcePos []*Value

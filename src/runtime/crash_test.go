@@ -800,3 +800,55 @@ func TestDoublePanic(t *testing.T) {
 		}
 	}
 }
+
+// Test that panic while panicking discards error message
+// See issue 52257
+func TestPanicWhilePanicking(t *testing.T) {
+	tests := []struct {
+		Want string
+		Func string
+	}{
+		{
+			"panic while printing panic value: important error message",
+			"ErrorPanic",
+		},
+		{
+			"panic while printing panic value: important stringer message",
+			"StringerPanic",
+		},
+		{
+			"panic while printing panic value: type",
+			"DoubleErrorPanic",
+		},
+		{
+			"panic while printing panic value: type",
+			"DoubleStringerPanic",
+		},
+		{
+			"panic while printing panic value: type",
+			"CircularPanic",
+		},
+		{
+			"important string message",
+			"StringPanic",
+		},
+		{
+			"nil",
+			"NilPanic",
+		},
+	}
+	for _, x := range tests {
+		output := runTestProg(t, "testprog", x.Func)
+		if !strings.Contains(output, x.Want) {
+			t.Errorf("output does not contain %q:\n%s", x.Want, output)
+		}
+	}
+}
+
+func TestPanicOnUnsafeSlice(t *testing.T) {
+	output := runTestProg(t, "testprog", "panicOnNilAndEleSizeIsZero")
+	want := "panic: runtime error: unsafe.Slice: ptr is nil and len is not zero"
+	if !strings.Contains(output, want) {
+		t.Errorf("output does not contain %q:\n%s", want, output)
+	}
+}

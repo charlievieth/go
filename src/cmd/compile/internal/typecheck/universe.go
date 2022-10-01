@@ -58,6 +58,9 @@ var unsafeFuncs = [...]struct {
 	{"Offsetof", ir.OOFFSETOF},
 	{"Sizeof", ir.OSIZEOF},
 	{"Slice", ir.OUNSAFESLICE},
+	{"SliceData", ir.OUNSAFESLICEDATA},
+	{"String", ir.OUNSAFESTRING},
+	{"StringData", ir.OUNSAFESTRINGDATA},
 }
 
 // InitUniverse initializes the universe block.
@@ -101,9 +104,7 @@ func InitUniverse() {
 	ir.AsNode(s.Def).SetType(types.Types[types.TBLANK])
 
 	s = types.BuiltinPkg.Lookup("nil")
-	nnil := NodNil()
-	nnil.(*ir.NilExpr).SetSym(s)
-	s.Def = nnil
+	s.Def = NodNil()
 
 	// initialize okfor
 	for et := types.Kind(0); et < types.NTYPE; et++ {

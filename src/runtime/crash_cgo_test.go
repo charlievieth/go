@@ -603,8 +603,14 @@ func TestSegv(t *testing.T) {
 		t.Skipf("no signals on %s", runtime.GOOS)
 	}
 
-	for _, test := range []string{"Segv", "SegvInCgo"} {
+	for _, test := range []string{"Segv", "SegvInCgo", "TgkillSegv", "TgkillSegvInCgo"} {
 		test := test
+
+		// The tgkill variants only run on Linux.
+		if runtime.GOOS != "linux" && strings.HasPrefix(test, "Tgkill") {
+			continue
+		}
+
 		t.Run(test, func(t *testing.T) {
 			t.Parallel()
 			got := runTestProg(t, "testprogcgo", test)
@@ -633,9 +639,14 @@ func TestSegv(t *testing.T) {
 				testenv.SkipFlaky(t, 50979)
 			}
 
-			nowant := "runtime: "
-			if strings.Contains(got, nowant) {
-				t.Errorf("unexpectedly saw %q in output", nowant)
+			for _, nowant := range []string{"fatal error: ", "runtime: "} {
+				if strings.Contains(got, nowant) {
+					if runtime.GOOS == "darwin" && strings.Contains(got, "0xb01dfacedebac1e") {
+						// See the comment in signal_darwin_amd64.go.
+						t.Skip("skipping due to Darwin handling of malformed addresses")
+					}
+					t.Errorf("unexpectedly saw %q in output", nowant)
+				}
 			}
 		})
 	}
@@ -708,5 +719,37 @@ func TestCgoTracebackGoroutineProfile(t *testing.T) {
 	want := "OK\n"
 	if output != want {
 		t.Fatalf("want %s, got %s\n", want, output)
+	}
+}
+
+func TestCgoTraceParser(t *testing.T) {
+	// Test issue 29707.
+	switch runtime.GOOS {
+	case "plan9", "windows":
+		t.Skipf("no pthreads on %s", runtime.GOOS)
+	}
+	output := runTestProg(t, "testprogcgo", "CgoTraceParser")
+	want := "OK\n"
+	ErrTimeOrder := "ErrTimeOrder\n"
+	if output == ErrTimeOrder {
+		t.Skipf("skipping due to golang.org/issue/16755: %v", output)
+	} else if output != want {
+		t.Fatalf("want %s, got %s\n", want, output)
+	}
+}
+
+func TestCgoTraceParserWithOneProc(t *testing.T) {
+	// Test issue 29707.
+	switch runtime.GOOS {
+	case "plan9", "windows":
+		t.Skipf("no pthreads on %s", runtime.GOOS)
+	}
+	output := runTestProg(t, "testprogcgo", "CgoTraceParser", "GOMAXPROCS=1")
+	want := "OK\n"
+	ErrTimeOrder := "ErrTimeOrder\n"
+	if output == ErrTimeOrder {
+		t.Skipf("skipping due to golang.org/issue/16755: %v", output)
+	} else if output != want {
+		t.Fatalf("GOMAXPROCS=1, want %s, got %s\n", want, output)
 	}
 }

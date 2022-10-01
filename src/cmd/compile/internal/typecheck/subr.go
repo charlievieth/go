@@ -8,12 +8,12 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/ir"
 	"cmd/compile/internal/types"
+	"cmd/internal/obj"
 	"cmd/internal/objabi"
 	"cmd/internal/src"
 )
@@ -22,13 +22,9 @@ func AssignConv(n ir.Node, t *types.Type, context string) ir.Node {
 	return assignconvfn(n, t, func() string { return context })
 }
 
-// LookupNum looks up the symbol starting with prefix and ending with
-// the decimal n. If prefix is too long, LookupNum panics.
+// LookupNum returns types.LocalPkg.LookupNum(prefix, n).
 func LookupNum(prefix string, n int) *types.Sym {
-	var buf [20]byte // plenty long enough for all current users
-	copy(buf[:], prefix)
-	b := strconv.AppendInt(buf[:len(prefix)], int64(n), 10)
-	return types.LocalPkg.LookupBytes(b)
+	return types.LocalPkg.LookupNum(prefix, n)
 }
 
 // Given funarg struct list, return list of fn args.
@@ -45,7 +41,7 @@ func NewFuncParams(tl *types.Type, mustname bool) []*ir.Field {
 			// TODO(mdempsky): Preserve original position, name, and package.
 			s = Lookup(s.Name)
 		}
-		a := ir.NewField(base.Pos, s, nil, t.Type)
+		a := ir.NewField(base.Pos, s, t.Type)
 		a.Pos = t.Pos
 		a.IsDDD = t.IsDDD()
 		args = append(args, a)
@@ -122,6 +118,13 @@ func ComputeAddrtaken(top []ir.Node) {
 		}
 		ir.Visit(n, doVisit)
 	}
+}
+
+// LinksymAddr returns a new expression that evaluates to the address
+// of lsym. typ specifies the type of the addressed memory.
+func LinksymAddr(pos src.XPos, lsym *obj.LSym, typ *types.Type) *ir.AddrExpr {
+	n := ir.NewLinksymExpr(pos, lsym, typ)
+	return Expr(NodAddrAt(pos, n)).(*ir.AddrExpr)
 }
 
 func NodNil() ir.Node {
@@ -298,24 +301,14 @@ func assignconvfn(n ir.Node, t *types.Type, context func() string) ir.Node {
 
 	n = convlit1(n, t, false, context)
 	if n.Type() == nil {
-		return n
+		base.Fatalf("cannot assign %v to %v", n, t)
+	}
+	if n.Type().IsUntyped() {
+		base.Fatalf("%L has untyped type", n)
 	}
 	if t.Kind() == types.TBLANK {
 		return n
 	}
-
-	// Convert ideal bool from comparison to plain bool
-	// if the next step is non-bool (like interface{}).
-	if n.Type() == types.UntypedBool && !t.IsBoolean() {
-		if n.Op() == ir.ONAME || n.Op() == ir.OLITERAL {
-			r := ir.NewConvExpr(base.Pos, ir.OCONVNOP, nil, n)
-			r.SetType(types.Types[types.TBOOL])
-			r.SetTypecheck(1)
-			r.SetImplicit(true)
-			n = r
-		}
-	}
-
 	if types.Identical(n.Type(), t) {
 		return n
 	}
@@ -387,6 +380,11 @@ func Assignop1(src, dst *types.Type) (ir.Op, string) {
 			// Shape types implement things they have already
 			// been typechecked to implement, even if they
 			// don't have the methods for them.
+			return ir.OCONVIFACE, ""
+		}
+		if base.Debug.Unified != 0 && src.HasShape() {
+			// Unified IR uses OCONVIFACE for converting all derived types
+			// to interface type, not just type arguments themselves.
 			return ir.OCONVIFACE, ""
 		}
 		if implements(src, dst, &missing, &have, &ptr) {
@@ -473,15 +471,15 @@ func Convertop(srcConstant bool, src, dst *types.Type) (ir.Op, string) {
 		return ir.OXXX, ""
 	}
 
-	// Conversions from regular to go:notinheap are not allowed
+	// Conversions from regular to not-in-heap are not allowed
 	// (unless it's unsafe.Pointer). These are runtime-specific
 	// rules.
-	// (a) Disallow (*T) to (*U) where T is go:notinheap but U isn't.
+	// (a) Disallow (*T) to (*U) where T is not-in-heap but U isn't.
 	if src.IsPtr() && dst.IsPtr() && dst.Elem().NotInHeap() && !src.Elem().NotInHeap() {
 		why := fmt.Sprintf(":\n\t%v is incomplete (or unallocatable), but %v is not", dst.Elem(), src.Elem())
 		return ir.OXXX, why
 	}
-	// (b) Disallow string to []T where T is go:notinheap.
+	// (b) Disallow string to []T where T is not-in-heap.
 	if src.IsString() && dst.IsSlice() && dst.Elem().NotInHeap() && (dst.Elem().Kind() == types.ByteType.Kind() || dst.Elem().Kind() == types.RuneType.Kind()) {
 		why := fmt.Sprintf(":\n\t%v is incomplete (or unallocatable)", dst.Elem())
 		return ir.OXXX, why
@@ -581,11 +579,16 @@ func Convertop(srcConstant bool, src, dst *types.Type) (ir.Op, string) {
 		return ir.OCONVNOP, ""
 	}
 
-	// 11. src is a slice and dst is a pointer-to-array.
+	// 11. src is a slice and dst is an array or pointer-to-array.
 	// They must have same element type.
-	if src.IsSlice() && dst.IsPtr() && dst.Elem().IsArray() &&
-		types.Identical(src.Elem(), dst.Elem().Elem()) {
-		return ir.OSLICE2ARRPTR, ""
+	if src.IsSlice() {
+		if dst.IsArray() && types.Identical(src.Elem(), dst.Elem()) {
+			return ir.OSLICE2ARR, ""
+		}
+		if dst.IsPtr() && dst.Elem().IsArray() &&
+			types.Identical(src.Elem(), dst.Elem().Elem()) {
+			return ir.OSLICE2ARRPTR, ""
+		}
 	}
 
 	return ir.OXXX, ""
@@ -887,7 +890,7 @@ type symlink struct {
 
 // TypesOf converts a list of nodes to a list
 // of types of those nodes.
-func TypesOf(x []ir.Node) []*types.Type {
+func TypesOf(x []ir.Ntype) []*types.Type {
 	r := make([]*types.Type, len(x))
 	for i, n := range x {
 		r[i] = n.Type()
@@ -1018,6 +1021,8 @@ type Tsubster struct {
 	Vars map[*ir.Name]*ir.Name
 	// If non-nil, function to substitute an incomplete (TFORW) type.
 	SubstForwFunc func(*types.Type) *types.Type
+	// Prevent endless recursion on functions. See #51832.
+	Funcs map[*types.Type]bool
 }
 
 // Typ computes the type obtained by substituting any type parameter or shape in t
@@ -1035,7 +1040,8 @@ func (ts *Tsubster) Typ(t *types.Type) *types.Type {
 }
 
 func (ts *Tsubster) typ1(t *types.Type) *types.Type {
-	if !t.HasTParam() && !t.HasShape() && t.Kind() != types.TFUNC {
+	hasParamOrShape := t.HasTParam() || t.HasShape()
+	if !hasParamOrShape && t.Kind() != types.TFUNC {
 		// Note: function types need to be copied regardless, as the
 		// types of closures may contain declarations that need
 		// to be copied. See #45738.
@@ -1071,10 +1077,10 @@ func (ts *Tsubster) typ1(t *types.Type) *types.Type {
 
 	var newsym *types.Sym
 	var neededTargs []*types.Type
-	var targsChanged bool
+	var targsChanged bool // == are there any substitutions from this
 	var forw *types.Type
 
-	if t.Sym() != nil && (t.HasTParam() || t.HasShape()) {
+	if t.Sym() != nil && hasParamOrShape {
 		// Need to test for t.HasTParam() again because of special TFUNC case above.
 		// Translate the type params for this type according to
 		// the tparam/targs mapping from subst.
@@ -1149,6 +1155,17 @@ func (ts *Tsubster) typ1(t *types.Type) *types.Type {
 		}
 
 	case types.TFUNC:
+		// watch out for endless recursion on plain function types that mention themselves, e.g. "type T func() T"
+		if !hasParamOrShape {
+			if ts.Funcs[t] { // Visit such function types only once.
+				return t
+			}
+			if ts.Funcs == nil {
+				// allocate lazily
+				ts.Funcs = make(map[*types.Type]bool)
+			}
+			ts.Funcs[t] = true
+		}
 		newrecvs := ts.tstruct(t.Recvs(), false)
 		newparams := ts.tstruct(t.Params(), false)
 		newresults := ts.tstruct(t.Results(), false)
@@ -1183,6 +1200,9 @@ func (ts *Tsubster) typ1(t *types.Type) *types.Type {
 			}
 			newt = types.NewSignature(t.Pkg(), newrecv, tparamfields,
 				newparams.FieldSlice(), newresults.FieldSlice())
+		}
+		if !hasParamOrShape {
+			delete(ts.Funcs, t)
 		}
 
 	case types.TINTER:
@@ -1476,14 +1496,14 @@ func getShapes(t *types.Type, listp *[]*types.Type) {
 // For now, we only consider two types to have the same shape, if they have exactly
 // the same underlying type or they are both pointer types.
 //
-//  tparam is the associated typeparam - it must be TTYPEPARAM type. If there is a
-//  structural type for the associated type param (not common), then a pointer type t
-//  is mapped to its underlying type, rather than being merged with other pointers.
+// tparam is the associated typeparam - it must be TTYPEPARAM type. If there is a
+// structural type for the associated type param (not common), then a pointer type t
+// is mapped to its underlying type, rather than being merged with other pointers.
 //
-//  Shape types are also distinguished by the index of the type in a type param/arg
-//  list. We need to do this so we can distinguish and substitute properly for two
-//  type params in the same function that have the same shape for a particular
-//  instantiation.
+// Shape types are also distinguished by the index of the type in a type param/arg
+// list. We need to do this so we can distinguish and substitute properly for two
+// type params in the same function that have the same shape for a particular
+// instantiation.
 func Shapify(t *types.Type, index int, tparam *types.Type) *types.Type {
 	assert(!t.IsShape())
 	if t.HasShape() {

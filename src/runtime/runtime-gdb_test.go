@@ -40,6 +40,10 @@ func checkGdbEnvironment(t *testing.T) {
 		if runtime.GOARCH == "mips" {
 			t.Skip("skipping gdb tests on linux/mips; see https://golang.org/issue/25939")
 		}
+		// Disable GDB tests on alpine until issue #54352 resolved.
+		if strings.HasSuffix(testenv.Builder(), "-alpine") {
+			t.Skip("skipping gdb tests on alpine; see https://golang.org/issue/54352")
+		}
 	case "freebsd":
 		t.Skip("skipping gdb tests on FreeBSD; see https://golang.org/issue/29508")
 	case "aix":
@@ -435,6 +439,11 @@ func TestGdbBacktrace(t *testing.T) {
 			// GDB bug: https://sourceware.org/bugzilla/show_bug.cgi?id=9086
 			testenv.SkipFlaky(t, 50838)
 		}
+		if bytes.Contains(got, []byte(" exited normally]\n")) {
+			// GDB bug: Sometimes the inferior exits fine,
+			// but then GDB hangs.
+			testenv.SkipFlaky(t, 37405)
+		}
 		t.Fatalf("gdb exited with error: %v", err)
 	}
 
@@ -500,6 +509,10 @@ func TestGdbAutotmpTypes(t *testing.T) {
 	args := []string{"-nx", "-batch",
 		"-iex", "add-auto-load-safe-path " + filepath.Join(testenv.GOROOT(t), "src", "runtime"),
 		"-ex", "set startup-with-shell off",
+		// Some gdb may set scheduling-locking as "step" by default. This prevents background tasks
+		// (e.g GC) from completing which may result in a hang when executing the step command.
+		// See #49852.
+		"-ex", "set scheduler-locking off",
 		"-ex", "break main.main",
 		"-ex", "run",
 		"-ex", "step",

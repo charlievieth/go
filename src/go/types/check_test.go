@@ -50,12 +50,11 @@ var (
 var fset = token.NewFileSet()
 
 // Positioned errors are of the form filename:line:column: message .
-var posMsgRx = regexp.MustCompile(`^(.*:[0-9]+:[0-9]+): *(?s)(.*)`)
+var posMsgRx = regexp.MustCompile(`^(.*:\d+:\d+): *(?s)(.*)`)
 
 // splitError splits an error's error message into a position string
 // and the actual error message. If there's no position information,
 // pos is the empty string, and msg is the entire error message.
-//
 func splitError(err error) (pos, msg string) {
 	msg = err.Error()
 	if m := posMsgRx.FindStringSubmatch(msg); len(m) == 3 {
@@ -89,11 +88,8 @@ func parseFiles(t *testing.T, filenames []string, srcs [][]byte, mode parser.Mod
 
 // ERROR comments must start with text `ERROR "rx"` or `ERROR rx` where
 // rx is a regular expression that matches the expected error message.
-// Space around "rx" or rx is ignored. Use the form `ERROR HERE "rx"`
-// for error messages that are located immediately after rather than
-// at a token's position.
-//
-var errRx = regexp.MustCompile(`^ *ERROR *(HERE)? *"?([^"]*)"?`)
+// Space around "rx" or rx is ignored.
+var errRx = regexp.MustCompile(`^ *ERROR *"?([^"]*)"?`)
 
 // errMap collects the regular expressions of ERROR comments found
 // in files and returns them as a map of error positions to error messages.
@@ -110,7 +106,6 @@ func errMap(t *testing.T, files []*ast.File, srcs [][]byte) map[string][]string 
 		var s scanner.Scanner
 		s.Init(tok, src, nil, scanner.ScanComments)
 		var prev token.Pos // position of last non-comment, non-semicolon token
-		var here token.Pos // position immediately after the token at position prev
 
 	scanFile:
 		for {
@@ -122,13 +117,9 @@ func errMap(t *testing.T, files []*ast.File, srcs [][]byte) map[string][]string 
 				if lit[1] == '*' {
 					lit = lit[:len(lit)-2] // strip trailing */
 				}
-				if s := errRx.FindStringSubmatch(lit[2:]); len(s) == 3 {
-					pos := prev
-					if s[1] == "HERE" {
-						pos = here
-					}
-					p := fset.Position(pos).String()
-					errmap[p] = append(errmap[p], strings.TrimSpace(s[2]))
+				if s := errRx.FindStringSubmatch(lit[2:]); len(s) == 2 {
+					p := fset.Position(prev).String()
+					errmap[p] = append(errmap[p], strings.TrimSpace(s[1]))
 				}
 			case token.SEMICOLON:
 				// ignore automatically inserted semicolon
@@ -138,13 +129,6 @@ func errMap(t *testing.T, files []*ast.File, srcs [][]byte) map[string][]string 
 				fallthrough
 			default:
 				prev = pos
-				var l int // token length
-				if tok.IsLiteral() {
-					l = len(lit)
-				} else {
-					l = len(tok.String())
-				}
-				here = prev + token.Pos(l)
 			}
 		}
 	}
@@ -187,7 +171,7 @@ func eliminate(t *testing.T, errmap map[string][]string, errlist []error) {
 
 // parseFlags parses flags from the first line of the given source
 // (from src if present, or by reading from the file) if the line
-// starts with "//" (line comment) followed by "-" (possiby with
+// starts with "//" (line comment) followed by "-" (possibly with
 // spaces between). Otherwise the line is ignored.
 func parseFlags(filename string, src []byte, flags *flag.FlagSet) error {
 	// If there is no src, read from the file.
@@ -235,6 +219,11 @@ func testFiles(t *testing.T, sizes Sizes, filenames []string, srcs [][]byte, man
 	flags.BoolVar(&conf.FakeImportC, "fakeImportC", false, "")
 	if err := parseFlags(filenames[0], srcs[0], flags); err != nil {
 		t.Fatal(err)
+	}
+
+	if manual && *goVersion != "" {
+		// goVersion overrides -lang for manual tests.
+		conf.GoVersion = *goVersion
 	}
 
 	// TODO(gri) remove this or use flag mechanism to set mode if still needed
@@ -316,7 +305,7 @@ func testFiles(t *testing.T, sizes Sizes, filenames []string, srcs [][]byte, man
 // (and a separating "--"). For instance, to test the package made
 // of the files foo.go and bar.go, use:
 //
-// 	go test -run Manual -- foo.go bar.go
+//	go test -run Manual -- foo.go bar.go
 //
 // If no source arguments are provided, the file testdata/manual.go
 // is used instead.
@@ -349,7 +338,7 @@ func TestManual(t *testing.T) {
 }
 
 func TestLongConstants(t *testing.T) {
-	format := "package longconst\n\nconst _ = %s\nconst _ = %s // ERROR excessively long constant"
+	format := "package longconst\n\nconst _ = %s /* ERROR constant overflow */ \nconst _ = %s // ERROR excessively long constant"
 	src := fmt.Sprintf(format, strings.Repeat("1", 9999), strings.Repeat("1", 10001))
 	testFiles(t, nil, []string{"longconst.go"}, [][]byte{[]byte(src)}, false, nil)
 }
@@ -369,10 +358,14 @@ func TestIssue47243_TypedRHS(t *testing.T) {
 	testFiles(t, &StdSizes{4, 4}, []string{"p.go"}, [][]byte{[]byte(src)}, false, nil)
 }
 
-func TestCheck(t *testing.T)     { testDirFiles(t, "testdata/check", false) }
-func TestSpec(t *testing.T)      { testDirFiles(t, "testdata/spec", false) }
-func TestExamples(t *testing.T)  { testDirFiles(t, "testdata/examples", false) }
-func TestFixedbugs(t *testing.T) { testDirFiles(t, "testdata/fixedbugs", false) }
+func TestCheck(t *testing.T) {
+	DefPredeclaredTestFuncs()
+	testDirFiles(t, "../../internal/types/testdata/check", false)
+}
+func TestSpec(t *testing.T)      { testDirFiles(t, "../../internal/types/testdata/spec", false) }
+func TestExamples(t *testing.T)  { testDirFiles(t, "../../internal/types/testdata/examples", false) }
+func TestFixedbugs(t *testing.T) { testDirFiles(t, "../../internal/types/testdata/fixedbugs", false) }
+func TestLocal(t *testing.T)     { testDirFiles(t, "testdata/local", false) }
 
 func testDirFiles(t *testing.T, dir string, manual bool) {
 	testenv.MustHaveGoBuild(t)

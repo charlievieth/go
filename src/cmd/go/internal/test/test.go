@@ -7,15 +7,13 @@ package test
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"go/build"
-	exec "internal/execabs"
 	"io"
 	"io/fs"
 	"os"
-	"path"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -132,7 +130,7 @@ test caching explicitly is to use -count=1. Tests that open files within
 the package's source root (usually $GOPATH) or that consult environment
 variables only match future runs in which the files and environment
 variables are unchanged. A cached test result is treated as executing
-in no time at all,so a successful package test result will be cached and
+in no time at all, so a successful package test result will be cached and
 reused regardless of -timeout setting.
 
 In addition to the build flags, the flags handled by 'go test' itself are:
@@ -306,6 +304,7 @@ control the execution of any test:
 	    run too, so that -run=X/Y matches and runs and reports the result
 	    of all tests matching X, even those without sub-tests matching Y,
 	    because it must run them to look for those sub-tests.
+	    See also -skip.
 
 	-short
 	    Tell long-running tests to shorten their run time.
@@ -319,6 +318,14 @@ control the execution of any test:
 	    the randomizer using the system clock. If -shuffle is set to an
 	    integer N, then N will be used as the seed value. In both cases,
 	    the seed will be reported for reproducibility.
+
+	-skip regexp
+	    Run only those tests, examples, fuzz tests, and benchmarks that
+	    do not match the regular expression. Like for -run and -bench,
+	    for tests and benchmarks, the regular expression is split by unbracketed
+	    slash (/) characters into a sequence of regular expressions, and each
+	    part of a test's identifier must match the corresponding element in
+	    the sequence, if any.
 
 	-timeout d
 	    If a test binary runs longer than duration d, panic.
@@ -527,9 +534,6 @@ See the documentation of the testing package for more information.
 var (
 	testBench        string                            // -bench flag
 	testC            bool                              // -c flag
-	testCover        bool                              // -cover flag
-	testCoverMode    string                            // -covermode flag
-	testCoverPaths   []string                          // -coverpkg flag
 	testCoverPkgs    []*load.Package                   // -coverpkg flag
 	testCoverProfile string                            // -coverprofile flag
 	testFuzz         string                            // -fuzz flag
@@ -744,8 +748,12 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		}
 	}
 
-	var b work.Builder
-	b.Init()
+	b := work.NewBuilder("")
+	defer func() {
+		if err := b.Close(); err != nil {
+			base.Fatalf("go: %v", err)
+		}
+	}()
 
 	if cfg.BuildI {
 		fmt.Fprint(os.Stderr, "go: -i flag is deprecated\n")
@@ -800,78 +808,33 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 		if !testC || a.Failed {
 			return
 		}
-		b.Init()
+
+		// TODO(bcmills): I have no idea why the Builder must be reset here, but
+		// without this reset dance, TestGoTestDashIDashOWritesBinary fails with
+		// lots of "vet config not found" errors. This was added in CL 5699088,
+		// which had almost no public discussion, a very short commit description,
+		// and left no comment in the code to explain what is going on here. 🤯
+		//
+		// Maybe this has the effect of removing actions that were registered by the
+		// call to CompileAction above?
+		if err := b.Close(); err != nil {
+			base.Fatalf("go: %v", err)
+		}
+		b = work.NewBuilder("")
 	}
 
 	var builds, runs, prints []*work.Action
 
-	if testCoverPaths != nil {
-		match := make([]func(*load.Package) bool, len(testCoverPaths))
-		matched := make([]bool, len(testCoverPaths))
-		for i := range testCoverPaths {
-			match[i] = load.MatchPackage(testCoverPaths[i], base.Cwd())
+	if cfg.BuildCoverPkg != nil {
+		match := make([]func(*load.Package) bool, len(cfg.BuildCoverPkg))
+		for i := range cfg.BuildCoverPkg {
+			match[i] = load.MatchPackage(cfg.BuildCoverPkg[i], base.Cwd())
 		}
 
-		// Select for coverage all dependencies matching the testCoverPaths patterns.
-		for _, p := range load.TestPackageList(ctx, pkgOpts, pkgs) {
-			haveMatch := false
-			for i := range testCoverPaths {
-				if match[i](p) {
-					matched[i] = true
-					haveMatch = true
-				}
-			}
-
-			// A package which only has test files can't be imported
-			// as a dependency, nor can it be instrumented for coverage.
-			if len(p.GoFiles)+len(p.CgoFiles) == 0 {
-				continue
-			}
-
-			// Silently ignore attempts to run coverage on
-			// sync/atomic when using atomic coverage mode.
-			// Atomic coverage mode uses sync/atomic, so
-			// we can't also do coverage on it.
-			if testCoverMode == "atomic" && p.Standard && p.ImportPath == "sync/atomic" {
-				continue
-			}
-
-			// If using the race detector, silently ignore
-			// attempts to run coverage on the runtime
-			// packages. It will cause the race detector
-			// to be invoked before it has been initialized.
-			if cfg.BuildRace && p.Standard && (p.ImportPath == "runtime" || strings.HasPrefix(p.ImportPath, "runtime/internal")) {
-				continue
-			}
-
-			if haveMatch {
-				testCoverPkgs = append(testCoverPkgs, p)
-			}
-		}
-
-		// Warn about -coverpkg arguments that are not actually used.
-		for i := range testCoverPaths {
-			if !matched[i] {
-				fmt.Fprintf(os.Stderr, "warning: no packages being tested depend on matches for pattern %s\n", testCoverPaths[i])
-			}
-		}
-
-		// Mark all the coverage packages for rebuilding with coverage.
-		for _, p := range testCoverPkgs {
-			// There is nothing to cover in package unsafe; it comes from the compiler.
-			if p.ImportPath == "unsafe" {
-				continue
-			}
-			p.Internal.CoverMode = testCoverMode
-			var coverFiles []string
-			coverFiles = append(coverFiles, p.GoFiles...)
-			coverFiles = append(coverFiles, p.CgoFiles...)
-			coverFiles = append(coverFiles, p.TestGoFiles...)
-			p.Internal.CoverVars = declareCoverVars(p, coverFiles...)
-			if testCover && testCoverMode == "atomic" {
-				ensureImport(p, "sync/atomic")
-			}
-		}
+		// Select for coverage all dependencies matching the -coverpkg
+		// patterns.
+		plist := load.TestPackageList(ctx, pkgOpts, pkgs)
+		testCoverPkgs = load.SelectCoverPackages(plist, match, "test")
 	}
 
 	// Inform the compiler that it should instrument the binary at
@@ -912,11 +875,11 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 	// Prepare build + run + print actions for all packages being tested.
 	for _, p := range pkgs {
 		// sync/atomic import is inserted by the cover tool. See #18486
-		if testCover && testCoverMode == "atomic" {
-			ensureImport(p, "sync/atomic")
+		if cfg.BuildCover && cfg.BuildCoverMode == "atomic" {
+			load.EnsureImport(p, "sync/atomic")
 		}
 
-		buildTest, runTest, printTest, err := builderTest(&b, ctx, pkgOpts, p, allImports[p])
+		buildTest, runTest, printTest, err := builderTest(b, ctx, pkgOpts, p, allImports[p])
 		if err != nil {
 			str := err.Error()
 			str = strings.TrimPrefix(str, "\n")
@@ -960,22 +923,6 @@ func runTest(ctx context.Context, cmd *base.Command, args []string) {
 	b.Do(ctx, root)
 }
 
-// ensures that package p imports the named package
-func ensureImport(p *load.Package, pkg string) {
-	for _, d := range p.Internal.Imports {
-		if d.Name == pkg {
-			return
-		}
-	}
-
-	p1 := load.LoadImportWithFlags(pkg, p.Dir, p, &load.ImportStack{}, nil, 0)
-	if p1.Error != nil {
-		base.Fatalf("load %s: %v", pkg, p1.Error)
-	}
-
-	p.Internal.Imports = append(p.Internal.Imports, p1)
-}
-
 var windowsBadWords = []string{
 	"install",
 	"patch",
@@ -997,13 +944,12 @@ func builderTest(b *work.Builder, ctx context.Context, pkgOpts load.PackageOpts,
 	//	ptest - package + test files
 	//	pxtest - package of external test files
 	var cover *load.TestCover
-	if testCover {
+	if cfg.BuildCover {
 		cover = &load.TestCover{
-			Mode:     testCoverMode,
-			Local:    testCover && testCoverPaths == nil,
-			Pkgs:     testCoverPkgs,
-			Paths:    testCoverPaths,
-			DeclVars: declareCoverVars,
+			Mode:  cfg.BuildCoverMode,
+			Local: cfg.BuildCoverPkg == nil,
+			Pkgs:  testCoverPkgs,
+			Paths: cfg.BuildCoverPkg,
 		}
 	}
 	pmain, ptest, pxtest, err := load.TestPackagesFor(ctx, pkgOpts, p, cover)
@@ -1179,50 +1125,6 @@ func addTestVet(b *work.Builder, p *load.Package, runAction, installAction *work
 	}
 }
 
-// isTestFile reports whether the source file is a set of tests and should therefore
-// be excluded from coverage analysis.
-func isTestFile(file string) bool {
-	// We don't cover tests, only the code they test.
-	return strings.HasSuffix(file, "_test.go")
-}
-
-// declareCoverVars attaches the required cover variables names
-// to the files, to be used when annotating the files.
-func declareCoverVars(p *load.Package, files ...string) map[string]*load.CoverVar {
-	coverVars := make(map[string]*load.CoverVar)
-	coverIndex := 0
-	// We create the cover counters as new top-level variables in the package.
-	// We need to avoid collisions with user variables (GoCover_0 is unlikely but still)
-	// and more importantly with dot imports of other covered packages,
-	// so we append 12 hex digits from the SHA-256 of the import path.
-	// The point is only to avoid accidents, not to defeat users determined to
-	// break things.
-	sum := sha256.Sum256([]byte(p.ImportPath))
-	h := fmt.Sprintf("%x", sum[:6])
-	for _, file := range files {
-		if isTestFile(file) {
-			continue
-		}
-		// For a package that is "local" (imported via ./ import or command line, outside GOPATH),
-		// we record the full path to the file name.
-		// Otherwise we record the import path, then a forward slash, then the file name.
-		// This makes profiles within GOPATH file system-independent.
-		// These names appear in the cmd/cover HTML interface.
-		var longFile string
-		if p.Internal.Local {
-			longFile = filepath.Join(p.Dir, file)
-		} else {
-			longFile = path.Join(p.ImportPath, file)
-		}
-		coverVars[file] = &load.CoverVar{
-			File: longFile,
-			Var:  fmt.Sprintf("GoCover_%d_%x", coverIndex, h),
-		}
-		coverIndex++
-	}
-	return coverVars
-}
-
 var noTestsToRun = []byte("\ntesting: warning: no tests to run\n")
 var noFuzzTestsToFuzz = []byte("\ntesting: warning: no fuzz tests to fuzz\n")
 var tooManyFuzzTestsToFuzz = []byte("\ntesting: warning: -fuzz matches more than one fuzz test, won't fuzz\n")
@@ -1334,7 +1236,26 @@ func (c *runCache) builderRunTest(b *work.Builder, ctx context.Context, a *work.
 		fuzzCacheDir := filepath.Join(cache.Default().FuzzDir(), a.Package.ImportPath)
 		fuzzArg = []string{"-test.fuzzcachedir=" + fuzzCacheDir}
 	}
-	args := str.StringList(execCmd, a.Deps[0].BuiltTarget(), testlogArg, panicArg, fuzzArg, testArgs)
+	coverdirArg := []string{}
+	addToEnv := ""
+	if cfg.BuildCover {
+		gcd := filepath.Join(a.Objdir, "gocoverdir")
+		if err := b.Mkdir(gcd); err != nil {
+			// If we can't create a temp dir, terminate immediately
+			// with an error as opposed to returning an error to the
+			// caller; failed MkDir most likely indicates that we're
+			// out of disk space or there is some other systemic error
+			// that will make forward progress unlikely.
+			base.Fatalf("failed to create temporary dir: %v", err)
+		}
+		coverdirArg = append(coverdirArg, "-test.gocoverdir="+gcd)
+		// Even though we are passing the -test.gocoverdir option to
+		// the test binary, also set GOCOVERDIR as well. This is
+		// intended to help with tests that run "go build" to build
+		// fresh copies of tools to test as part of the testing.
+		addToEnv = "GOCOVERDIR=" + gcd
+	}
+	args := str.StringList(execCmd, a.Deps[0].BuiltTarget(), testlogArg, panicArg, fuzzArg, coverdirArg, testArgs)
 
 	if testCoverProfile != "" {
 		// Write coverage to temporary profile, for merging later.
@@ -1354,7 +1275,15 @@ func (c *runCache) builderRunTest(b *work.Builder, ctx context.Context, a *work.
 
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = a.Package.Dir
-	cmd.Env = base.AppendPWD(cfg.OrigEnv[:len(cfg.OrigEnv):len(cfg.OrigEnv)], cmd.Dir)
+
+	env := cfg.OrigEnv[:len(cfg.OrigEnv):len(cfg.OrigEnv)]
+	env = base.AppendPATH(env)
+	env = base.AppendPWD(env, cmd.Dir)
+	cmd.Env = env
+	if addToEnv != "" {
+		cmd.Env = append(cmd.Env, addToEnv)
+	}
+
 	cmd.Stdout = stdout
 	cmd.Stderr = stdout
 
@@ -1828,7 +1757,7 @@ func (c *runCache) saveOutput(a *work.Action) {
 // coveragePercentage returns the coverage results (if enabled) for the
 // test. It uncovers the data by scanning the output from the test run.
 func coveragePercentage(out []byte) string {
-	if !testCover {
+	if !cfg.BuildCover {
 		return ""
 	}
 	// The string looks like

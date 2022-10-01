@@ -9,8 +9,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	exec "internal/execabs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -293,7 +293,7 @@ func makeExprList(a []*ast.Ident) []ast.Expr {
 	return b
 }
 
-// Typecheck1 is the recursive form of typecheck.
+// typecheck1 is the recursive form of typecheck.
 // It is like typecheck but adds to the information in typeof
 // instead of allocating a new map.
 func typecheck1(cfg *TypeConfig, f any, typeof map[any]string, assign map[string][]any) {

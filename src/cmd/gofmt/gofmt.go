@@ -76,6 +76,11 @@ func initParserMode() {
 	if *allErrors {
 		parserMode |= parser.AllErrors
 	}
+	// It's only -r that makes use of go/ast's object resolution,
+	// so avoid the unnecessary work if the flag isn't used.
+	if *rewriteRule == "" {
+		parserMode |= parser.SkipObjectResolution
+	}
 }
 
 func isGoFile(f fs.DirEntry) bool {

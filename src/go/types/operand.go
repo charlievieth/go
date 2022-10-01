@@ -49,7 +49,6 @@ var operandModeString = [...]string{
 // the operand, the operand's type, a value for constants, and an id
 // for built-in functions.
 // The zero value of operand is a ready to use invalid operand.
-//
 type operand struct {
 	mode operandMode
 	expr ast.Expr
@@ -60,7 +59,6 @@ type operand struct {
 
 // Pos returns the position of the expression corresponding to x.
 // If x is invalid the position is token.NoPos.
-//
 func (x *operand) Pos() token.Pos {
 	// x.expr may not be set if x is invalid
 	if x.expr == nil {
@@ -102,7 +100,6 @@ func (x *operand) Pos() token.Pos {
 //
 // cgofunc    <expr> (<untyped kind> <mode>                    )
 // cgofunc    <expr> (               <mode>       of type <typ>)
-//
 func operandString(x *operand, qf Qualifier) string {
 	// special-case nil
 	if x.mode == value && x.typ == Typ[UntypedNil] {
@@ -164,7 +161,7 @@ func operandString(x *operand, qf Qualifier) string {
 		if x.typ != Typ[Invalid] {
 			var intro string
 			if isGeneric(x.typ) {
-				intro = " of parameterized type "
+				intro = " of generic type "
 			} else {
 				intro = " of type "
 			}
@@ -226,12 +223,12 @@ func (x *operand) isNil() bool {
 }
 
 // assignableTo reports whether x is assignable to a variable of type T. If the
-// result is false and a non-nil reason is provided, it may be set to a more
+// result is false and a non-nil cause is provided, it may be set to a more
 // detailed explanation of the failure (result != ""). The returned error code
 // is only valid if the (first) result is false. The check parameter may be nil
 // if assignableTo is invoked through an exported API call, i.e., when all
 // methods have been type-checked.
-func (x *operand) assignableTo(check *Checker, T Type, reason *string) (bool, errorCode) {
+func (x *operand) assignableTo(check *Checker, T Type, cause *string) (bool, errorCode) {
 	if x.mode == invalid || T == Typ[Invalid] {
 		return true, 0 // avoid spurious errors
 	}
@@ -280,10 +277,7 @@ func (x *operand) assignableTo(check *Checker, T Type, reason *string) (bool, er
 	// T is an interface type and x implements T and T is not a type parameter.
 	// Also handle the case where T is a pointer to an interface.
 	if _, ok := Tu.(*Interface); ok && Tp == nil || isInterfacePtr(Tu) {
-		if err := check.implements(V, T); err != nil {
-			if reason != nil {
-				*reason = err.Error()
-			}
+		if !check.implements(V, T, cause) {
 			return false, _InvalidIfaceAssign
 		}
 		return true, 0
@@ -291,10 +285,10 @@ func (x *operand) assignableTo(check *Checker, T Type, reason *string) (bool, er
 
 	// If V is an interface, check if a missing type assertion is the problem.
 	if Vi, _ := Vu.(*Interface); Vi != nil && Vp == nil {
-		if check.implements(T, V) == nil {
+		if check.implements(T, V, nil) {
 			// T implements V, so give hint about type assertion.
-			if reason != nil {
-				*reason = "need type assertion"
+			if cause != nil {
+				*cause = "need type assertion"
 			}
 			return false, _IncompatibleAssign
 		}
@@ -315,12 +309,12 @@ func (x *operand) assignableTo(check *Checker, T Type, reason *string) (bool, er
 	}
 
 	errorf := func(format string, args ...any) {
-		if check != nil && reason != nil {
+		if check != nil && cause != nil {
 			msg := check.sprintf(format, args...)
-			if *reason != "" {
-				msg += "\n\t" + *reason
+			if *cause != "" {
+				msg += "\n\t" + *cause
 			}
-			*reason = msg
+			*cause = msg
 		}
 	}
 
@@ -333,7 +327,7 @@ func (x *operand) assignableTo(check *Checker, T Type, reason *string) (bool, er
 			if T == nil {
 				return false // no specific types
 			}
-			ok, code = x.assignableTo(check, T.typ, reason)
+			ok, code = x.assignableTo(check, T.typ, cause)
 			if !ok {
 				errorf("cannot assign %s to %s (in %s)", x.typ, T.typ, Tp)
 				return false
@@ -355,7 +349,7 @@ func (x *operand) assignableTo(check *Checker, T Type, reason *string) (bool, er
 				return false // no specific types
 			}
 			x.typ = V.typ
-			ok, code = x.assignableTo(check, T, reason)
+			ok, code = x.assignableTo(check, T, cause)
 			if !ok {
 				errorf("cannot assign %s (in %s) to %s", V.typ, Vp, T)
 				return false

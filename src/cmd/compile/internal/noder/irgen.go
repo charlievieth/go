@@ -6,6 +6,8 @@ package noder
 
 import (
 	"fmt"
+	"regexp"
+	"sort"
 
 	"cmd/compile/internal/base"
 	"cmd/compile/internal/dwarfgen"
@@ -16,6 +18,8 @@ import (
 	"cmd/compile/internal/types2"
 	"cmd/internal/src"
 )
+
+var versionErrorRx = regexp.MustCompile(`requires go[0-9]+\.[0-9]+ or later`)
 
 // checkFiles configures and runs the types2 checker on the given
 // parsed source files and then returns the result.
@@ -36,32 +40,61 @@ func checkFiles(noders []*noder) (posMap, *types2.Package, *types2.Info) {
 	ctxt := types2.NewContext()
 	importer := gcimports{
 		ctxt:     ctxt,
-		packages: map[string]*types2.Package{"unsafe": types2.Unsafe},
+		packages: make(map[string]*types2.Package),
 	}
 	conf := types2.Config{
-		Context:               ctxt,
-		GoVersion:             base.Flag.Lang,
-		IgnoreLabels:          true, // parser already checked via syntax.CheckBranches mode
-		CompilerErrorMessages: true, // use error strings matching existing compiler errors
+		Context:            ctxt,
+		GoVersion:          base.Flag.Lang,
+		IgnoreBranchErrors: true, // parser already checked via syntax.CheckBranches mode
 		Error: func(err error) {
 			terr := err.(types2.Error)
-			base.ErrorfAt(m.makeXPos(terr.Pos), "%s", terr.Msg)
+			msg := terr.Msg
+			// if we have a version error, hint at the -lang setting
+			if versionErrorRx.MatchString(msg) {
+				msg = fmt.Sprintf("%s (-lang was set to %s; check go.mod)", msg, base.Flag.Lang)
+			}
+			base.ErrorfAt(m.makeXPos(terr.Pos), "%s", msg)
 		},
 		Importer: &importer,
 		Sizes:    &gcSizes{},
 	}
 	info := &types2.Info{
-		Types:      make(map[syntax.Expr]types2.TypeAndValue),
-		Defs:       make(map[*syntax.Name]types2.Object),
-		Uses:       make(map[*syntax.Name]types2.Object),
-		Selections: make(map[*syntax.SelectorExpr]*types2.Selection),
-		Implicits:  make(map[syntax.Node]types2.Object),
-		Scopes:     make(map[syntax.Node]*types2.Scope),
-		Instances:  make(map[*syntax.Name]types2.Instance),
+		StoreTypesInSyntax: true,
+		Defs:               make(map[*syntax.Name]types2.Object),
+		Uses:               make(map[*syntax.Name]types2.Object),
+		Selections:         make(map[*syntax.SelectorExpr]*types2.Selection),
+		Implicits:          make(map[syntax.Node]types2.Object),
+		Scopes:             make(map[syntax.Node]*types2.Scope),
+		Instances:          make(map[*syntax.Name]types2.Instance),
 		// expand as needed
 	}
 
 	pkg, err := conf.Check(base.Ctxt.Pkgpath, files, info)
+
+	// Implementation restriction: we don't allow not-in-heap types to
+	// be used as type arguments (#54765).
+	{
+		type nihTarg struct {
+			pos src.XPos
+			typ types2.Type
+		}
+		var nihTargs []nihTarg
+
+		for name, inst := range info.Instances {
+			for i := 0; i < inst.TypeArgs.Len(); i++ {
+				if targ := inst.TypeArgs.At(i); isNotInHeap(targ) {
+					nihTargs = append(nihTargs, nihTarg{m.makeXPos(name.Pos()), targ})
+				}
+			}
+		}
+		sort.Slice(nihTargs, func(i, j int) bool {
+			ti, tj := nihTargs[i], nihTargs[j]
+			return ti.pos.Before(tj.pos)
+		})
+		for _, targ := range nihTargs {
+			base.ErrorfAt(targ.pos, "cannot use incomplete (or unallocatable) type as a type argument: %v", targ.typ)
+		}
+	}
 
 	base.ExitIfErrors()
 	if err != nil {
@@ -219,7 +252,6 @@ type typeDelayInfo struct {
 
 func (g *irgen) generate(noders []*noder) {
 	types.LocalPkg.Name = g.self.Name()
-	types.LocalPkg.Height = g.self.Height()
 	typecheck.TypecheckAllowed = true
 
 	// Prevent size calculations until we set the underlying type
@@ -356,4 +388,20 @@ func (g *irgen) unhandled(what string, p poser) {
 // creating the nodes for a generic function/method.
 func (g *irgen) delayTransform() bool {
 	return g.topFuncIsGeneric
+}
+
+func (g *irgen) typeAndValue(x syntax.Expr) syntax.TypeAndValue {
+	tv := x.GetTypeInfo()
+	if tv.Type == nil {
+		base.FatalfAt(g.pos(x), "missing type for %v (%T)", x, x)
+	}
+	return tv
+}
+
+func (g *irgen) type2(x syntax.Expr) syntax.Type {
+	tv := x.GetTypeInfo()
+	if tv.Type == nil {
+		base.FatalfAt(g.pos(x), "missing type for %v (%T)", x, x)
+	}
+	return tv.Type
 }

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:generate go run -mod=mod mknode.go
+//go:generate go run mknode.go
 
 package ir
 
@@ -27,7 +27,6 @@ import (
 // The embedding struct should also fill in n.op in its constructor,
 // for more useful panic messages when invalid methods are called,
 // instead of implementing Op itself.
-//
 type miniNode struct {
 	pos  src.XPos // uint32
 	op   Op       // uint8

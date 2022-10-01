@@ -31,8 +31,11 @@ type DebugFlags struct {
 	LocationLists        int    `help:"print information about DWARF location list creation"`
 	Nil                  int    `help:"print information about nil checks"`
 	NoOpenDefer          int    `help:"disable open-coded defers"`
+	NoRefName            int    `help:"do not include referenced symbol names in object file"`
 	PCTab                string `help:"print named pc-value table\nOne of: pctospadj, pctofile, pctoline, pctoinline, pctopcdata"`
 	Panic                int    `help:"show all compiler panics"`
+	Reshape              int    `help:"print information about expression reshaping"`
+	Shapify              int    `help:"print information about shaping recursive types"`
 	Slice                int    `help:"print information about slice compilation"`
 	SoftFloat            int    `help:"force compiler to emit soft-float code"`
 	SyncFrames           int    `help:"how many writer stack frames to include at sync points in unified export data"`

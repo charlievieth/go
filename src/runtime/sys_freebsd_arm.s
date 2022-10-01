@@ -31,7 +31,6 @@
 #define SYS_sched_yield (SYS_BASE + 331)
 #define SYS_sigprocmask (SYS_BASE + 340)
 #define SYS_kqueue (SYS_BASE + 362)
-#define SYS_kevent (SYS_BASE + 363)
 #define SYS_sigaction (SYS_BASE + 416)
 #define SYS_thr_exit (SYS_BASE + 431)
 #define SYS_thr_self (SYS_BASE + 432)
@@ -41,6 +40,7 @@
 #define SYS_mmap (SYS_BASE + 477)
 #define SYS_cpuset_getaffinity (SYS_BASE + 487)
 #define SYS_pipe2 (SYS_BASE + 542)
+#define SYS_kevent (SYS_BASE + 560)
 
 TEXT runtime·sys_umtx_op(SB),NOSPLIT,$0
 	MOVW addr+0(FP), R0
@@ -231,7 +231,7 @@ TEXT runtime·asmSigaction(SB),NOSPLIT|NOFRAME,$0
 	MOVW	R0, ret+12(FP)
 	RET
 
-TEXT runtime·sigtramp(SB),NOSPLIT,$0
+TEXT runtime·sigtramp(SB),NOSPLIT|TOPFRAME,$0
 	// Reserve space for callee-save registers and arguments.
 	MOVM.DB.W [R4-R11], (R13)
 	SUB	$16, R13

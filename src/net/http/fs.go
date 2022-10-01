@@ -431,7 +431,7 @@ func checkIfUnmodifiedSince(r *Request, modtime time.Time) condResult {
 	// The Last-Modified header truncates sub-second precision so
 	// the modtime needs to be truncated too.
 	modtime = modtime.Truncate(time.Second)
-	if modtime.Before(t) || modtime.Equal(t) {
+	if ret := modtime.Compare(t); ret <= 0 {
 		return condTrue
 	}
 	return condFalse
@@ -482,7 +482,7 @@ func checkIfModifiedSince(r *Request, modtime time.Time) condResult {
 	// The Last-Modified header truncates sub-second precision so
 	// the modtime needs to be truncated too.
 	modtime = modtime.Truncate(time.Second)
-	if modtime.Before(t) || modtime.Equal(t) {
+	if ret := modtime.Compare(t); ret <= 0 {
 		return condFalse
 	}
 	return condTrue
@@ -541,6 +541,7 @@ func writeNotModified(w ResponseWriter) {
 	h := w.Header()
 	delete(h, "Content-Type")
 	delete(h, "Content-Length")
+	delete(h, "Content-Encoding")
 	if h.Get("Etag") != "" {
 		delete(h, "Last-Modified")
 	}
@@ -641,7 +642,6 @@ func serveFile(w ResponseWriter, r *Request, fs FileSystem, name string, redirec
 			defer ff.Close()
 			dd, err := ff.Stat()
 			if err == nil {
-				name = index
 				d = dd
 				f = ff
 			}
@@ -817,6 +817,7 @@ func (f ioFile) Readdir(count int) ([]fs.FileInfo, error) {
 
 // FS converts fsys to a FileSystem implementation,
 // for use with FileServer and NewFileTransport.
+// The files provided by fsys must implement io.Seeker.
 func FS(fsys fs.FS) FileSystem {
 	return ioFS{fsys}
 }
@@ -831,23 +832,32 @@ func FS(fsys fs.FS) FileSystem {
 // To use the operating system's file system implementation,
 // use http.Dir:
 //
-//     http.Handle("/", http.FileServer(http.Dir("/tmp")))
+//	http.Handle("/", http.FileServer(http.Dir("/tmp")))
 //
 // To use an fs.FS implementation, use http.FS to convert it:
 //
 //	http.Handle("/", http.FileServer(http.FS(fsys)))
-//
 func FileServer(root FileSystem) Handler {
 	return &fileHandler{root}
 }
 
 func (f *fileHandler) ServeHTTP(w ResponseWriter, r *Request) {
-	upath := r.URL.Path
-	if !strings.HasPrefix(upath, "/") {
-		upath = "/" + upath
-		r.URL.Path = upath
+	const options = MethodOptions + ", " + MethodGet + ", " + MethodHead
+
+	switch r.Method {
+	case MethodGet, MethodHead:
+		if !strings.HasPrefix(r.URL.Path, "/") {
+			r.URL.Path = "/" + r.URL.Path
+		}
+		serveFile(w, r, f.root, path.Clean(r.URL.Path), true)
+
+	case MethodOptions:
+		w.Header().Set("Allow", options)
+
+	default:
+		w.Header().Set("Allow", options)
+		Error(w, "read-only", StatusMethodNotAllowed)
 	}
-	serveFile(w, r, f.root, path.Clean(upath), true)
 }
 
 // httpRange specifies the byte range to be sent to the client.

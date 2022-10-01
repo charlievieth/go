@@ -7,7 +7,6 @@ package test
 import (
 	"bytes"
 	"internal/testenv"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,7 +31,7 @@ func TestReproducibleBuilds(t *testing.T) {
 		t.Run(test, func(t *testing.T) {
 			t.Parallel()
 			var want []byte
-			tmp, err := ioutil.TempFile("", "")
+			tmp, err := os.CreateTemp("", "")
 			if err != nil {
 				t.Fatalf("temp file creation failed: %v", err)
 			}
@@ -45,7 +44,7 @@ func TestReproducibleBuilds(t *testing.T) {
 				if err != nil {
 					t.Fatalf("failed to compile: %v\n%s", err, out)
 				}
-				obj, err := ioutil.ReadFile(tmp.Name())
+				obj, err := os.ReadFile(tmp.Name())
 				if err != nil {
 					t.Fatalf("failed to read object file: %v", err)
 				}
@@ -68,7 +67,7 @@ func TestIssue38068(t *testing.T) {
 	// Compile a small package with and without the concurrent
 	// backend, then check to make sure that the resulting archives
 	// are identical.  Note: this uses "go tool compile" instead of
-	// "go build" since the latter will generate differnent build IDs
+	// "go build" since the latter will generate different build IDs
 	// if it sees different command line flags.
 	scenarios := []struct {
 		tag     string
@@ -78,7 +77,7 @@ func TestIssue38068(t *testing.T) {
 		{tag: "serial", args: "-c=1"},
 		{tag: "concurrent", args: "-c=2"}}
 
-	tmpdir, err := ioutil.TempDir("", "TestIssue38068")
+	tmpdir, err := os.MkdirTemp("", "TestIssue38068")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +96,7 @@ func TestIssue38068(t *testing.T) {
 	}
 
 	readBytes := func(fn string) []byte {
-		payload, err := ioutil.ReadFile(fn)
+		payload, err := os.ReadFile(fn)
 		if err != nil {
 			t.Fatalf("failed to read executable '%s': %v", fn, err)
 		}

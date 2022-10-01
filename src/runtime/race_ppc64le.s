@@ -410,7 +410,7 @@ racecallatomic_ignore:
 	BL	racecall<>(SB)
 	// Call __tsan_go_ignore_sync_end.
 	MOVD	$__tsan_go_ignore_sync_end(SB), R8
-	MOVD	g_racectx(g), R3	// goroutine context g should sitll be good?
+	MOVD	g_racectx(g), R3	// goroutine context g should still be good?
 	BL	racecall<>(SB)
 	RET
 
@@ -442,6 +442,9 @@ TEXT	racecall<>(SB), NOSPLIT, $0-0
 	BEQ	call			// already on g0
 	MOVD	(g_sched+gobuf_sp)(R10), R1 // switch R1
 call:
+	// prepare frame for C ABI
+	SUB	$32, R1			// create frame for callee saving LR, CR, R2 etc.
+	RLDCR   $0, R1, $~15, R1	// align SP to 16 bytes
 	MOVD	R8, CTR			// R8 = caller addr
 	MOVD	R8, R12			// expected by PPC64 ABI
 	BL	(CTR)

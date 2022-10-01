@@ -40,7 +40,12 @@ type Source64 interface {
 // NewSource returns a new pseudo-random Source seeded with the given value.
 // Unlike the default Source used by top-level functions, this source is not
 // safe for concurrent use by multiple goroutines.
+// The returned Source implements Source64.
 func NewSource(seed int64) Source {
+	return newSource64(seed)
+}
+
+func newSource64(seed int64) Source64 {
 	var rng rngSource
 	rng.Seed(seed)
 	return &rng
@@ -365,8 +370,7 @@ func Read(p []byte) (n int, err error) { return globalRand.Read(p) }
 // To produce a different normal distribution, callers can
 // adjust the output using:
 //
-//  sample = NormFloat64() * desiredStdDev + desiredMean
-//
+//	sample = NormFloat64() * desiredStdDev + desiredMean
 func NormFloat64() float64 { return globalRand.NormFloat64() }
 
 // ExpFloat64 returns an exponentially distributed float64 in the range
@@ -375,8 +379,7 @@ func NormFloat64() float64 { return globalRand.NormFloat64() }
 // To produce a distribution with a different rate parameter,
 // callers can adjust the output using:
 //
-//  sample = ExpFloat64() / desiredRateParameter
-//
+//	sample = ExpFloat64() / desiredRateParameter
 func ExpFloat64() float64 { return globalRand.ExpFloat64() }
 
 type lockedSource struct {

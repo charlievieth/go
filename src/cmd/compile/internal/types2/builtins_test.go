@@ -128,6 +128,16 @@ var builtinCalls = []struct {
 
 	{"Slice", `var p *int; _ = unsafe.Slice(p, 1)`, `func(*int, int) []int`},
 	{"Slice", `var p *byte; var n uintptr; _ = unsafe.Slice(p, n)`, `func(*byte, uintptr) []byte`},
+	{"Slice", `type B *byte; var b B; _ = unsafe.Slice(b, 0)`, `func(*byte, int) []byte`},
+
+	{"SliceData", "var s []int; _ = unsafe.SliceData(s)", `func([]int) *int`},
+	{"SliceData", "type S []int; var s S; _ = unsafe.SliceData(s)", `func([]int) *int`},
+
+	{"String", `var p *byte; _ = unsafe.String(p, 1)`, `func(*byte, int) string`},
+	{"String", `type B *byte; var b B; _ = unsafe.String(b, 0)`, `func(*byte, int) string`},
+
+	{"StringData", `var s string; _ = unsafe.StringData(s)`, `func(string) *byte`},
+	{"StringData", `_ = unsafe.StringData("foo")`, `func(string) *byte`},
 
 	{"assert", `assert(true)`, `invalid type`},                                    // constant
 	{"assert", `type B bool; const pred B = 1 < 2; assert(pred)`, `invalid type`}, // constant
@@ -159,7 +169,7 @@ func TestBuiltinSignatures(t *testing.T) {
 
 func parseGenericSrc(path, src string) (*syntax.File, error) {
 	errh := func(error) {} // dummy error handler so that parsing continues in presence of errors
-	return syntax.Parse(syntax.NewFileBase(path), strings.NewReader(src), errh, nil, syntax.AllowGenerics)
+	return syntax.Parse(syntax.NewFileBase(path), strings.NewReader(src), errh, nil, 0)
 }
 
 func testBuiltinSignature(t *testing.T, name, src0, want string) {

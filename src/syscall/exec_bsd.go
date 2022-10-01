@@ -49,6 +49,7 @@ func runtime_AfterForkInChild()
 // For the same reason compiler does not race instrument it.
 // The calls to RawSyscall are okay because they are assembly
 // functions that do not grow the stack.
+//
 //go:norace
 func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr *ProcAttr, sys *SysProcAttr, pipe int) (pid int, err Errno) {
 	// Declare all variables at top in case any
@@ -183,6 +184,8 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 	if pipe < nextfd {
 		if runtime.GOOS == "netbsd" || (runtime.GOOS == "openbsd" && runtime.GOARCH == "mips64") {
 			_, _, err1 = RawSyscall(_SYS_DUP3, uintptr(pipe), uintptr(nextfd), O_CLOEXEC)
+		} else if runtime.GOOS == "dragonfly" {
+			_, _, err1 = RawSyscall(SYS_FCNTL, uintptr(pipe), _F_DUP2FD_CLOEXEC, uintptr(nextfd))
 		} else {
 			_, _, err1 = RawSyscall(SYS_DUP2, uintptr(pipe), uintptr(nextfd), 0)
 			if err1 != 0 {
@@ -203,6 +206,8 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 			}
 			if runtime.GOOS == "netbsd" || (runtime.GOOS == "openbsd" && runtime.GOARCH == "mips64") {
 				_, _, err1 = RawSyscall(_SYS_DUP3, uintptr(fd[i]), uintptr(nextfd), O_CLOEXEC)
+			} else if runtime.GOOS == "dragonfly" {
+				_, _, err1 = RawSyscall(SYS_FCNTL, uintptr(fd[i]), _F_DUP2FD_CLOEXEC, uintptr(nextfd))
 			} else {
 				_, _, err1 = RawSyscall(SYS_DUP2, uintptr(fd[i]), uintptr(nextfd), 0)
 				if err1 != 0 {

@@ -73,13 +73,13 @@ func (check *Checker) instantiateSignature(pos token.Pos, typ *Signature, targs 
 		}()
 	}
 
-	inst := check.instance(pos, typ, targs, check.bestContext(nil)).(*Signature)
+	inst := check.instance(pos, typ, targs, nil, check.context()).(*Signature)
 	assert(len(xlist) <= len(targs))
 
 	// verify instantiation lazily (was issue #50450)
 	check.later(func() {
 		tparams := typ.TypeParams().list()
-		if i, err := check.verify(pos, tparams, targs); err != nil {
+		if i, err := check.verify(pos, tparams, targs, check.context()); err != nil {
 			// best position for error reporting
 			pos := pos
 			if i < len(xlist) {
@@ -368,11 +368,10 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 		if sig.params != nil {
 			params = sig.params.vars
 		}
-		check.errorf(at, _WrongArgCount, "%s arguments in call to %s\n\thave %s\n\twant %s",
-			qualifier, call.Fun,
-			check.typesSummary(operandTypes(args), false),
-			check.typesSummary(varTypes(params), sig.variadic),
-		)
+		err := newErrorf(at, _WrongArgCount, "%s arguments in call to %s", qualifier, call.Fun)
+		err.errorf(token.NoPos, "have %s", check.typesSummary(operandTypes(args), false))
+		err.errorf(token.NoPos, "want %s", check.typesSummary(varTypes(params), sig.variadic))
+		check.report(err)
 		return
 	}
 
@@ -401,7 +400,7 @@ func (check *Checker) arguments(call *ast.CallExpr, sig *Signature, targs []Type
 		// need to compute it from the adjusted list; otherwise we can
 		// simply use the result signature's parameter list.
 		if adjusted {
-			sigParams = check.subst(call.Pos(), sigParams, makeSubstMap(sig.TypeParams().list(), targs), nil).(*Tuple)
+			sigParams = check.subst(call.Pos(), sigParams, makeSubstMap(sig.TypeParams().list(), targs), nil, check.context()).(*Tuple)
 		} else {
 			sigParams = rsig.params
 		}
@@ -470,7 +469,7 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *Named) {
 					}
 				}
 				if exp == nil {
-					check.errorf(e.Sel, _UndeclaredImportedName, "%s not declared by package C", sel)
+					check.errorf(e.Sel, _UndeclaredImportedName, "undefined: %s", ast.Expr(e)) // cast to ast.Expr to silence vet
 					goto Error
 				}
 				check.objDecl(exp, nil)
@@ -478,7 +477,7 @@ func (check *Checker) selector(x *operand, e *ast.SelectorExpr, def *Named) {
 				exp = pkg.scope.Lookup(sel)
 				if exp == nil {
 					if !pkg.fake {
-						check.errorf(e.Sel, _UndeclaredImportedName, "%s not declared by package %s", sel, pkg.name)
+						check.errorf(e.Sel, _UndeclaredImportedName, "undefined: %s", ast.Expr(e))
 					}
 					goto Error
 				}

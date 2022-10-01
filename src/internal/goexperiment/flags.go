@@ -58,6 +58,7 @@ type Flags struct {
 	FieldTrack        bool
 	PreemptibleLoops  bool
 	StaticLockRanking bool
+	BoringCrypto      bool
 
 	// Unified enables the compiler's unified IR construction
 	// experiment.
@@ -79,16 +80,14 @@ type Flags struct {
 	// reflection calls use registers).
 	RegabiArgs bool
 
-	// PacerRedesign enables the new GC pacer in the runtime.
-	//
-	// Details regarding the new pacer may be found at
-	// https://golang.org/design/44167-gc-pacer-redesign
-	PacerRedesign bool
-
 	// HeapMinimum512KiB reduces the minimum heap size to 512 KiB.
 	//
 	// This was originally reduced as part of PacerRedesign, but
 	// has been broken out to its own experiment that is disabled
 	// by default.
 	HeapMinimum512KiB bool
+
+	// CoverageRedesign enables the new compiler-based code coverage
+	// tooling.
+	CoverageRedesign bool
 }

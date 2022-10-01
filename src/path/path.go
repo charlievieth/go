@@ -52,28 +52,36 @@ func (b *lazybuf) string() string {
 // by purely lexical processing. It applies the following rules
 // iteratively until no further processing can be done:
 //
-//	1. Replace multiple slashes with a single slash.
-//	2. Eliminate each . path name element (the current directory).
-//	3. Eliminate each inner .. path name element (the parent directory)
-//	   along with the non-.. element that precedes it.
-//	4. Eliminate .. elements that begin a rooted path:
-//	   that is, replace "/.." by "/" at the beginning of a path.
+//  1. Replace multiple slashes with a single slash.
+//  2. Eliminate each . path name element (the current directory).
+//  3. Eliminate each inner .. path name element (the parent directory)
+//     along with the non-.. element that precedes it.
+//  4. Eliminate .. elements that begin a rooted path:
+//     that is, replace "/.." by "/" at the beginning of a path.
 //
 // The returned path ends in a slash only if it is the root "/".
 //
 // If the result of this process is an empty string, Clean
 // returns the string ".".
 //
-// See also Rob Pike, ``Lexical File Names in Plan 9 or
-// Getting Dot-Dot Right,''
+// See also Rob Pike, “Lexical File Names in Plan 9 or
+// Getting Dot-Dot Right,”
 // https://9p.io/sys/doc/lexnames.html
 func Clean(path string) string {
+	// Remove leading "./" and any extra slashes (".//a" => "a")
+	if len(path) >= 2 && path[:2] == "./" {
+		path = path[2:]
+		for path != "" && path[0] == '/' {
+			path = path[1:]
+		}
+	}
 	if path == "" {
 		return "."
 	}
 
-	rooted := path[0] == '/'
+	path = trimTrailingSlashes(path)
 	n := len(path)
+	rooted := path[0] == '/'
 
 	// Invariants:
 	//	reading from path; r is index of next byte to process.
@@ -87,6 +95,27 @@ func Clean(path string) string {
 		r, dotdot = 1, 1
 	}
 
+	// Fast path for clean paths. The check is imprecise and will mark
+	// some clean paths like "a/.git" and "a/..." as dirty, but is still
+	// faster than just using the big "dirty" loop below.
+	for i := 0; i < n-1; i++ {
+		if path[i] == '/' && (path[i+1] == '/' || path[i+1] == '.') {
+			if i != 0 {
+				r = i
+				out.w = i
+			}
+			goto Dirty
+		}
+		if path[i] == '.' && path[i+1] == '/' {
+			// It's faster to not update r and out.w here because paths
+			// like ".../" require us to backtrack or check that i+2 == n
+			// or i+2 == '/'.
+			goto Dirty
+		}
+	}
+	return path
+
+Dirty:
 	for r < n {
 		switch {
 		case path[r] == '/':
@@ -133,6 +162,16 @@ func Clean(path string) string {
 	}
 
 	return out.string()
+}
+
+// trimTrailingSlashes is strings.TrimRight(s[:1], "/") but we can't import
+// strings. If s is entirely slashes, "/" is returned.
+func trimTrailingSlashes(s string) string {
+	i := len(s) - 1
+	for i > 0 && s[i] == '/' {
+		i--
+	}
+	return s[:i+1]
 }
 
 // lastSlash(s) is strings.LastIndex(s, "/") but we can't import strings.

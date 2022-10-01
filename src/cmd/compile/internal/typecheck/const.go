@@ -620,7 +620,8 @@ func OrigInt(n ir.Node, v int64) ir.Node {
 // get the same type going out.
 // force means must assign concrete (non-ideal) type.
 // The results of defaultlit2 MUST be assigned back to l and r, e.g.
-// 	n.Left, n.Right = defaultlit2(n.Left, n.Right, force)
+//
+//	n.Left, n.Right = defaultlit2(n.Left, n.Right, force)
 func defaultlit2(l ir.Node, r ir.Node, force bool) (ir.Node, ir.Node) {
 	if l.Type() == nil || r.Type() == nil {
 		return l, r
@@ -733,35 +734,43 @@ func IndexConst(n ir.Node) int64 {
 	return ir.IntVal(types.Types[types.TINT], v)
 }
 
+// callOrChan reports whether n is a call or channel operation.
+func callOrChan(n ir.Node) bool {
+	switch n.Op() {
+	case ir.OAPPEND,
+		ir.OCALL,
+		ir.OCALLFUNC,
+		ir.OCALLINTER,
+		ir.OCALLMETH,
+		ir.OCAP,
+		ir.OCLOSE,
+		ir.OCOMPLEX,
+		ir.OCOPY,
+		ir.ODELETE,
+		ir.OIMAG,
+		ir.OLEN,
+		ir.OMAKE,
+		ir.ONEW,
+		ir.OPANIC,
+		ir.OPRINT,
+		ir.OPRINTN,
+		ir.OREAL,
+		ir.ORECOVER,
+		ir.ORECV,
+		ir.OUNSAFEADD,
+		ir.OUNSAFESLICE,
+		ir.OUNSAFESLICEDATA,
+		ir.OUNSAFESTRING,
+		ir.OUNSAFESTRINGDATA:
+		return true
+	}
+	return false
+}
+
 // anyCallOrChan reports whether n contains any calls or channel operations.
 func anyCallOrChan(n ir.Node) bool {
 	return ir.Any(n, func(n ir.Node) bool {
-		switch n.Op() {
-		case ir.OAPPEND,
-			ir.OCALL,
-			ir.OCALLFUNC,
-			ir.OCALLINTER,
-			ir.OCALLMETH,
-			ir.OCAP,
-			ir.OCLOSE,
-			ir.OCOMPLEX,
-			ir.OCOPY,
-			ir.ODELETE,
-			ir.OIMAG,
-			ir.OLEN,
-			ir.OMAKE,
-			ir.ONEW,
-			ir.OPANIC,
-			ir.OPRINT,
-			ir.OPRINTN,
-			ir.OREAL,
-			ir.ORECOVER,
-			ir.ORECV,
-			ir.OUNSAFEADD,
-			ir.OUNSAFESLICE:
-			return true
-		}
-		return false
+		return callOrChan(n)
 	})
 }
 
@@ -798,6 +807,18 @@ func evalunsafe(n ir.Node) int64 {
 		// first to track it correctly.
 		sel.X = Expr(sel.X)
 		sbase := sel.X
+
+		// Implicit dot may already be resolved for instantiating generic function. So we
+		// need to remove any implicit dot until we reach the first non-implicit one, it's
+		// the right base selector. See issue #53137.
+		var clobberBase func(n ir.Node) ir.Node
+		clobberBase = func(n ir.Node) ir.Node {
+			if sel, ok := n.(*ir.SelectorExpr); ok && sel.Implicit() {
+				return clobberBase(sel.X)
+			}
+			return n
+		}
+		sbase = clobberBase(sbase)
 
 		tsel := Expr(sel)
 		n.X = tsel

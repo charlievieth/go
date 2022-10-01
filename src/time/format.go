@@ -8,12 +8,16 @@ import "errors"
 
 // These are predefined layouts for use in Time.Format and time.Parse.
 // The reference time used in these layouts is the specific time stamp:
+//
 //	01/02 03:04:05PM '06 -0700
+//
 // (January 2, 15:04:05, 2006, in time zone seven hours west of GMT).
 // That value is recorded as the constant named Layout, listed below. As a Unix
 // time, this is 1136239445. Since MST is GMT-0700, the reference would be
 // printed by the Unix date command as:
+//
 //	Mon Jan 2 15:04:05 MST 2006
+//
 // It is a regrettable historic error that the date uses the American convention
 // of putting the numerical month before the day.
 //
@@ -49,25 +53,32 @@ import "errors"
 // verbatim in the input to Parse.
 //
 //	Year: "2006" "06"
-//	Month: "Jan" "January"
-//	Textual day of the week: "Mon" "Monday"
-//	Numeric day of the month: "2" "_2" "02"
-//	Numeric day of the year: "__2" "002"
+//	Month: "Jan" "January" "01" "1"
+//	Day of the week: "Mon" "Monday"
+//	Day of the month: "2" "_2" "02"
+//	Day of the year: "__2" "002"
 //	Hour: "15" "3" "03" (PM or AM)
 //	Minute: "4" "04"
 //	Second: "5" "05"
 //	AM/PM mark: "PM"
 //
 // Numeric time zone offsets format as follows:
-//	"-0700"  ±hhmm
-//	"-07:00" ±hh:mm
-//	"-07"    ±hh
+//
+//	"-0700"     ±hhmm
+//	"-07:00"    ±hh:mm
+//	"-07"       ±hh
+//	"-070000"   ±hhmmss
+//	"-07:00:00" ±hh:mm:ss
+//
 // Replacing the sign in the format with a Z triggers
 // the ISO 8601 behavior of printing Z instead of an
 // offset for the UTC zone. Thus:
-//	"Z0700"  Z or ±hhmm
-//	"Z07:00" Z or ±hh:mm
-//	"Z07"    Z or ±hh
+//
+//	"Z0700"      Z or ±hhmm
+//	"Z07:00"     Z or ±hh:mm
+//	"Z07"        Z or ±hh
+//	"Z070000"    Z or ±hhmmss
+//	"Z07:00:00"  Z or ±hh:mm:ss
 //
 // Within the format string, the underscores in "_2" and "__2" represent spaces
 // that may be replaced by digits if the following number has multiple digits,
@@ -87,7 +98,6 @@ import "errors"
 //
 // Some valid layouts are invalid time values for time.Parse, due to formats
 // such as _ for space padding and Z for zone information.
-//
 const (
 	Layout      = "01/02 03:04:05PM '06 -0700" // The reference time, in numerical order.
 	ANSIC       = "Mon Jan _2 15:04:05 2006"
@@ -106,6 +116,9 @@ const (
 	StampMilli = "Jan _2 15:04:05.000"
 	StampMicro = "Jan _2 15:04:05.000000"
 	StampNano  = "Jan _2 15:04:05.000000000"
+	DateTime   = "2006-01-02 15:04:05"
+	DateOnly   = "2006-01-02"
+	TimeOnly   = "15:04:05"
 )
 
 const (
@@ -485,6 +498,7 @@ func formatNano(b []byte, nanosec uint, std int) []byte {
 }
 
 // String returns the time formatted using the format string
+//
 //	"2006-01-02 15:04:05.999999999 -0700 MST"
 //
 // If the time has a monotonic clock reading, the returned string
@@ -526,26 +540,29 @@ func (t Time) String() string {
 // GoString implements fmt.GoStringer and formats t to be printed in Go source
 // code.
 func (t Time) GoString() string {
-	buf := make([]byte, 0, 70)
+	abs := t.abs()
+	year, month, day, _ := absDate(abs, true)
+	hour, minute, second := absClock(abs)
+
+	buf := make([]byte, 0, len("time.Date(9999, time.September, 31, 23, 59, 59, 999999999, time.Local)"))
 	buf = append(buf, "time.Date("...)
-	buf = appendInt(buf, t.Year(), 0)
-	month := t.Month()
+	buf = appendInt(buf, year, 0)
 	if January <= month && month <= December {
 		buf = append(buf, ", time."...)
-		buf = append(buf, t.Month().String()...)
+		buf = append(buf, longMonthNames[month-1]...)
 	} else {
 		// It's difficult to construct a time.Time with a date outside the
 		// standard range but we might as well try to handle the case.
 		buf = appendInt(buf, int(month), 0)
 	}
 	buf = append(buf, ", "...)
-	buf = appendInt(buf, t.Day(), 0)
+	buf = appendInt(buf, day, 0)
 	buf = append(buf, ", "...)
-	buf = appendInt(buf, t.Hour(), 0)
+	buf = appendInt(buf, hour, 0)
 	buf = append(buf, ", "...)
-	buf = appendInt(buf, t.Minute(), 0)
+	buf = appendInt(buf, minute, 0)
 	buf = append(buf, ", "...)
-	buf = appendInt(buf, t.Second(), 0)
+	buf = appendInt(buf, second, 0)
 	buf = append(buf, ", "...)
 	buf = appendInt(buf, t.Nanosecond(), 0)
 	buf = append(buf, ", "...)
@@ -571,8 +588,8 @@ func (t Time) GoString() string {
 		// Of these, Location(loc.name) is the least disruptive. This is an edge
 		// case we hope not to hit too often.
 		buf = append(buf, `time.Location(`...)
-		buf = append(buf, []byte(quote(loc.name))...)
-		buf = append(buf, `)`...)
+		buf = append(buf, quote(loc.name)...)
+		buf = append(buf, ')')
 	}
 	buf = append(buf, ')')
 	return string(buf)
@@ -601,6 +618,18 @@ func (t Time) Format(layout string) string {
 // AppendFormat is like Format but appends the textual
 // representation to b and returns the extended buffer.
 func (t Time) AppendFormat(b []byte, layout string) []byte {
+	// Optimize for RFC3339 as it accounts for over half of all representations.
+	switch layout {
+	case RFC3339:
+		return t.appendFormatRFC3339(b, false)
+	case RFC3339Nano:
+		return t.appendFormatRFC3339(b, true)
+	default:
+		return t.appendFormat(b, layout)
+	}
+}
+
+func (t Time) appendFormat(b []byte, layout string) []byte {
 	var (
 		name, offset, abs = t.locabs()
 
@@ -612,6 +641,7 @@ func (t Time) AppendFormat(b []byte, layout string) []byte {
 		min   int
 		sec   int
 	)
+
 	// Each iteration generates one std value.
 	for layout != "" {
 		prefix, std, suffix := nextStdChunk(layout)
@@ -776,6 +806,20 @@ type ParseError struct {
 	LayoutElem string
 	ValueElem  string
 	Message    string
+}
+
+// newParseError creates a new ParseError.
+// The provided value and valueElem are cloned to avoid escaping their values.
+func newParseError(layout, value, layoutElem, valueElem, message string) *ParseError {
+	valueCopy := cloneString(value)
+	valueElemCopy := cloneString(valueElem)
+	return &ParseError{layout, valueCopy, layoutElem, valueElemCopy, message}
+}
+
+// cloneString returns a string copy of s.
+// Do not use strings.Clone to avoid dependency on strings package.
+func cloneString(s string) string {
+	return string([]byte(s))
 }
 
 // These are borrowed from unicode/utf8 and strconv and replicate behavior in
@@ -945,6 +989,12 @@ func skip(value, prefix string) (string, error) {
 // differ by the actual zone offset. To avoid such problems, prefer time layouts
 // that use a numeric zone offset, or use ParseInLocation.
 func Parse(layout, value string) (Time, error) {
+	// Optimize for RFC3339 as it accounts for over half of all representations.
+	if layout == RFC3339 || layout == RFC3339Nano {
+		if t, ok := parseRFC3339(value, Local); ok {
+			return t, nil
+		}
+	}
 	return parse(layout, value, UTC, Local)
 }
 
@@ -954,6 +1004,12 @@ func Parse(layout, value string) (Time, error) {
 // Second, when given a zone offset or abbreviation, Parse tries to match it
 // against the Local location; ParseInLocation uses the given location.
 func ParseInLocation(layout, value string, loc *Location) (Time, error) {
+	// Optimize for RFC3339 as it accounts for over half of all representations.
+	if layout == RFC3339 || layout == RFC3339Nano {
+		if t, ok := parseRFC3339(value, loc); ok {
+			return t, nil
+		}
+	}
 	return parse(layout, value, loc, loc)
 }
 
@@ -985,11 +1041,11 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 		stdstr := layout[len(prefix) : len(layout)-len(suffix)]
 		value, err = skip(value, prefix)
 		if err != nil {
-			return Time{}, &ParseError{alayout, avalue, prefix, value, ""}
+			return Time{}, newParseError(alayout, avalue, prefix, value, "")
 		}
 		if std == 0 {
 			if len(value) != 0 {
-				return Time{}, &ParseError{alayout, avalue, "", value, ": extra text: " + quote(value)}
+				return Time{}, newParseError(alayout, avalue, "", value, ": extra text: "+quote(value))
 			}
 			break
 		}
@@ -1067,6 +1123,9 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 			}
 		case stdSecond, stdZeroSecond:
 			sec, value, err = getnum(value, std == stdZeroSecond)
+			if err != nil {
+				break
+			}
 			if sec < 0 || 60 <= sec {
 				rangeErrString = "second"
 				break
@@ -1162,12 +1221,12 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 				sign, hour, min, seconds, value = value[0:1], value[1:3], value[3:5], "00", value[5:]
 			}
 			var hr, mm, ss int
-			hr, err = atoi(hour)
+			hr, _, err = getnum(hour, true)
 			if err == nil {
-				mm, err = atoi(min)
+				mm, _, err = getnum(min, true)
 			}
 			if err == nil {
-				ss, err = atoi(seconds)
+				ss, _, err = getnum(seconds, true)
 			}
 			zoneOffset = (hr*60+mm)*60 + ss // offset is in seconds
 			switch sign[0] {
@@ -1210,17 +1269,17 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 			// Take any number of digits, even more than asked for,
 			// because it is what the stdSecond case would do.
 			i := 0
-			for i < 9 && i+1 < len(value) && '0' <= value[i+1] && value[i+1] <= '9' {
+			for i+1 < len(value) && '0' <= value[i+1] && value[i+1] <= '9' {
 				i++
 			}
 			nsec, rangeErrString, err = parseNanoseconds(value, 1+i)
 			value = value[1+i:]
 		}
 		if rangeErrString != "" {
-			return Time{}, &ParseError{alayout, avalue, stdstr, value, ": " + rangeErrString + " out of range"}
+			return Time{}, newParseError(alayout, avalue, stdstr, value, ": "+rangeErrString+" out of range")
 		}
 		if err != nil {
-			return Time{}, &ParseError{alayout, avalue, stdstr, value, ""}
+			return Time{}, newParseError(alayout, avalue, stdstr, value, "")
 		}
 	}
 	if pmSet && hour < 12 {
@@ -1242,7 +1301,7 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 			}
 		}
 		if yday < 1 || yday > 365 {
-			return Time{}, &ParseError{alayout, avalue, "", value, ": day-of-year out of range"}
+			return Time{}, newParseError(alayout, avalue, "", value, ": day-of-year out of range")
 		}
 		if m == 0 {
 			m = (yday-1)/31 + 1
@@ -1254,11 +1313,11 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 		// If month, day already seen, yday's m, d must match.
 		// Otherwise, set them from m, d.
 		if month >= 0 && month != m {
-			return Time{}, &ParseError{alayout, avalue, "", value, ": day-of-year does not match month"}
+			return Time{}, newParseError(alayout, avalue, "", value, ": day-of-year does not match month")
 		}
 		month = m
 		if day >= 0 && day != d {
-			return Time{}, &ParseError{alayout, avalue, "", value, ": day-of-year does not match day"}
+			return Time{}, newParseError(alayout, avalue, "", value, ": day-of-year does not match day")
 		}
 		day = d
 	} else {
@@ -1272,7 +1331,7 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 
 	// Validate the day of the month.
 	if day < 1 || day > daysIn(Month(month), year) {
-		return Time{}, &ParseError{alayout, avalue, "", value, ": day out of range"}
+		return Time{}, newParseError(alayout, avalue, "", value, ": day out of range")
 	}
 
 	if z != nil {
@@ -1292,7 +1351,8 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 		}
 
 		// Otherwise create fake zone to record offset.
-		t.setLoc(FixedZone(zoneName, zoneOffset))
+		zoneNameCopy := cloneString(zoneName) // avoid leaking the input value
+		t.setLoc(FixedZone(zoneNameCopy, zoneOffset))
 		return t, nil
 	}
 
@@ -1312,7 +1372,8 @@ func parse(layout, value string, defaultLocation, local *Location) (Time, error)
 			offset, _ = atoi(zoneName[3:]) // Guaranteed OK by parseGMT.
 			offset *= 3600
 		}
-		t.setLoc(FixedZone(zoneName, offset))
+		zoneNameCopy := cloneString(zoneName) // avoid leaking the input value
+		t.setLoc(FixedZone(zoneNameCopy, offset))
 		return t, nil
 	}
 

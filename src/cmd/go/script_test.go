@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"go/build"
+	"internal/buildcfg"
 	"internal/testenv"
 	"internal/txtar"
 	"io/fs"
@@ -81,6 +82,7 @@ func TestScript(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
 			ts := &testScript{
 				t:           t,
 				ctx:         ctx,
@@ -94,14 +96,13 @@ func TestScript(t *testing.T) {
 				defer removeAll(ts.workdir)
 			}
 			ts.run()
-			cancel()
 		})
 	}
 }
 
 // A testScript holds execution state for a single test script.
 type testScript struct {
-	t           *testing.T
+	t           testing.TB
 	ctx         context.Context
 	cancel      context.CancelFunc
 	gracePeriod time.Duration
@@ -161,21 +162,29 @@ func (ts *testScript) setup() {
 	ts.check(os.MkdirAll(filepath.Join(ts.workdir, "tmp"), 0777))
 	ts.check(os.MkdirAll(filepath.Join(ts.workdir, "gopath/src"), 0777))
 	ts.cd = filepath.Join(ts.workdir, "gopath/src")
+	version, err := goVersion()
+	if err != nil {
+		ts.t.Fatal(err)
+	}
 	ts.env = []string{
 		"WORK=" + ts.workdir, // must be first for ts.abbrev
-		"PATH=" + testBin + string(filepath.ListSeparator) + os.Getenv("PATH"),
+		pathEnvName() + "=" + testBin + string(filepath.ListSeparator) + os.Getenv(pathEnvName()),
 		homeEnvName() + "=/no-home",
 		"CCACHE_DISABLE=1", // ccache breaks with non-existent HOME
 		"GOARCH=" + runtime.GOARCH,
+		"TESTGO_GOHOSTARCH=" + goHostArch,
 		"GOCACHE=" + testGOCACHE,
+		"GOCOVERDIR=" + os.Getenv("GOCOVERDIR"),
 		"GODEBUG=" + os.Getenv("GODEBUG"),
 		"GOEXE=" + cfg.ExeSuffix,
+		"GOEXPERIMENT=" + os.Getenv("GOEXPERIMENT"),
 		"GOOS=" + runtime.GOOS,
+		"TESTGO_GOHOSTOS=" + goHostOS,
 		"GOPATH=" + filepath.Join(ts.workdir, "gopath"),
 		"GOPROXY=" + proxyURL,
 		"GOPRIVATE=",
 		"GOROOT=" + testGOROOT,
-		"GOROOT_FINAL=" + os.Getenv("GOROOT_FINAL"), // causes spurious rebuilds and breaks the "stale" built-in if not propagated
+		"GOROOT_FINAL=" + testGOROOT_FINAL, // causes spurious rebuilds and breaks the "stale" built-in if not propagated
 		"GOTRACEBACK=system",
 		"TESTGO_GOROOT=" + testGOROOT,
 		"GOSUMDB=" + testSumDBVerifierKey,
@@ -185,17 +194,25 @@ func (ts *testScript) setup() {
 		"PWD=" + ts.cd,
 		tempEnvName() + "=" + filepath.Join(ts.workdir, "tmp"),
 		"devnull=" + os.DevNull,
-		"goversion=" + goVersion(ts),
-		":=" + string(os.PathListSeparator),
-		"/=" + string(os.PathSeparator),
+		"goversion=" + version,
 		"CMDGO_TEST_RUN_MAIN=true",
+	}
+	if testenv.Builder() != "" || os.Getenv("GIT_TRACE_CURL") == "1" {
+		// To help diagnose https://go.dev/issue/52545,
+		// enable tracing for Git HTTPS requests.
+		ts.env = append(ts.env,
+			"GIT_TRACE_CURL=1",
+			"GIT_TRACE_CURL_NO_DATA=1",
+			"GIT_REDACT_COOKIES=o,SSO,GSSO_Uberproxy")
 	}
 	if !testenv.HasExternalNetwork() {
 		ts.env = append(ts.env, "TESTGONETWORK=panic", "TESTGOVCS=panic")
 	}
-
-	if runtime.GOOS == "plan9" {
-		ts.env = append(ts.env, "path="+testBin+string(filepath.ListSeparator)+os.Getenv("path"))
+	if os.Getenv("CGO_ENABLED") != "" || runtime.GOOS != goHostOS || runtime.GOARCH != goHostArch {
+		// If the actual CGO_ENABLED might not match the cmd/go default, set it
+		// explicitly in the environment. Otherwise, leave it unset so that we also
+		// cover the default behaviors.
+		ts.env = append(ts.env, "CGO_ENABLED="+cgoEnabled)
 	}
 
 	for _, key := range extraEnvKeys {
@@ -210,19 +227,44 @@ func (ts *testScript) setup() {
 			ts.envMap[kv[:i]] = kv[i+1:]
 		}
 	}
+	// Add entries for ${:} and ${/} to make it easier to write platform-independent
+	// environment variables.
+	ts.envMap["/"] = string(os.PathSeparator)
+	ts.envMap[":"] = string(os.PathListSeparator)
+
+	fmt.Fprintf(&ts.log, "# (%s)\n", time.Now().UTC().Format(time.RFC3339))
+	ts.mark = ts.log.Len()
 }
 
 // goVersion returns the current Go version.
-func goVersion(ts *testScript) string {
+func goVersion() (string, error) {
 	tags := build.Default.ReleaseTags
 	version := tags[len(tags)-1]
-	if !regexp.MustCompile(`^go([1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(version) {
-		ts.fatalf("invalid go version %q", version)
+	if !regexp.MustCompile(`^go([1-9]\d*)\.(0|[1-9]\d*)$`).MatchString(version) {
+		return "", fmt.Errorf("invalid go version %q", version)
 	}
-	return version[2:]
+	return version[2:], nil
 }
 
 var execCache par.Cache
+
+func goExperimentIsValid(expname string) bool {
+	for _, exp := range buildcfg.Experiment.All() {
+		if expname == exp || expname == "no"+exp || "no"+expname == exp {
+			return true
+		}
+	}
+	return false
+}
+
+func goExperimentIsEnabled(expname string) bool {
+	for _, exp := range buildcfg.Experiment.Enabled() {
+		if exp == expname {
+			return true
+		}
+	}
+	return false
+}
 
 // run runs the test script.
 func (ts *testScript) run() {
@@ -350,6 +392,8 @@ Script:
 			switch cond.tag {
 			case runtime.GOOS, runtime.GOARCH, runtime.Compiler:
 				ok = true
+			case "cross":
+				ok = goHostOS != runtime.GOOS || goHostArch != runtime.GOARCH
 			case "short":
 				ok = testing.Short()
 			case "cgo":
@@ -373,7 +417,10 @@ Script:
 			case "symlink":
 				ok = testenv.HasSymlink()
 			case "case-sensitive":
-				ok = isCaseSensitive(ts.t)
+				ok, err = isCaseSensitive()
+				if err != nil {
+					ts.fatalf("%v", err)
+				}
 			case "trimpath":
 				if info, _ := debug.ReadBuildInfo(); info == nil {
 					ts.fatalf("missing build info")
@@ -385,6 +432,8 @@ Script:
 						}
 					}
 				}
+			case "mismatched-goroot":
+				ok = testGOROOT_FINAL != "" && testGOROOT_FINAL != testGOROOT
 			default:
 				if strings.HasPrefix(cond.tag, "exec:") {
 					prog := cond.tag[len("exec:"):]
@@ -399,8 +448,7 @@ Script:
 					}).(bool)
 					break
 				}
-				if strings.HasPrefix(cond.tag, "GODEBUG:") {
-					value := strings.TrimPrefix(cond.tag, "GODEBUG:")
+				if value, found := strings.CutPrefix(cond.tag, "GODEBUG:"); found {
 					parts := strings.Split(os.Getenv("GODEBUG"), ",")
 					for _, p := range parts {
 						if strings.TrimSpace(p) == value {
@@ -410,9 +458,17 @@ Script:
 					}
 					break
 				}
-				if strings.HasPrefix(cond.tag, "buildmode:") {
-					value := strings.TrimPrefix(cond.tag, "buildmode:")
+				if value, found := strings.CutPrefix(cond.tag, "buildmode:"); found {
 					ok = sys.BuildModeSupported(runtime.Compiler, value, runtime.GOOS, runtime.GOARCH)
+					break
+				}
+				if strings.HasPrefix(cond.tag, "GOEXPERIMENT:") {
+					rawval := strings.TrimPrefix(cond.tag, "GOEXPERIMENT:")
+					value := strings.TrimSpace(rawval)
+					if !goExperimentIsValid(value) {
+						ts.fatalf("unknown/unrecognized GOEXPERIMENT %q", value)
+					}
+					ok = goExperimentIsEnabled(value)
 					break
 				}
 				if !imports.KnownArch[cond.tag] && !imports.KnownOS[cond.tag] && cond.tag != "gc" && cond.tag != "gccgo" {
@@ -454,19 +510,22 @@ Script:
 var (
 	onceCaseSensitive sync.Once
 	caseSensitive     bool
+	caseSensitiveErr  error
 )
 
-func isCaseSensitive(t *testing.T) bool {
+func isCaseSensitive() (bool, error) {
 	onceCaseSensitive.Do(func() {
 		tmpdir, err := os.MkdirTemp("", "case-sensitive")
 		if err != nil {
-			t.Fatal("failed to create directory to determine case-sensitivity:", err)
+			caseSensitiveErr = fmt.Errorf("failed to create directory to determine case-sensitivity: %w", err)
+			return
 		}
 		defer os.RemoveAll(tmpdir)
 
 		fcap := filepath.Join(tmpdir, "FILE")
 		if err := os.WriteFile(fcap, []byte{}, 0644); err != nil {
-			t.Fatal("error writing file to determine case-sensitivity:", err)
+			caseSensitiveErr = fmt.Errorf("error writing file to determine case-sensitivity: %w", err)
+			return
 		}
 
 		flow := filepath.Join(tmpdir, "file")
@@ -479,18 +538,17 @@ func isCaseSensitive(t *testing.T) bool {
 			caseSensitive = true
 			return
 		default:
-			t.Fatal("unexpected error reading file when determining case-sensitivity:", err)
+			caseSensitiveErr = fmt.Errorf("unexpected error reading file when determining case-sensitivity: %w", err)
 		}
 	})
 
-	return caseSensitive
+	return caseSensitive, caseSensitiveErr
 }
 
 // scriptCmds are the script command implementations.
 // Keep list and the implementations below sorted by name.
 //
 // NOTE: If you make changes here, update testdata/script/README too!
-//
 var scriptCmds = map[string]func(*testScript, simpleStatus, []string){
 	"addcrlf": (*testScript).cmdAddcrlf,
 	"cc":      (*testScript).cmdCc,
@@ -508,6 +566,7 @@ var scriptCmds = map[string]func(*testScript, simpleStatus, []string){
 	"mv":      (*testScript).cmdMv,
 	"rm":      (*testScript).cmdRm,
 	"skip":    (*testScript).cmdSkip,
+	"sleep":   (*testScript).cmdSleep,
 	"stale":   (*testScript).cmdStale,
 	"stderr":  (*testScript).cmdStderr,
 	"stdout":  (*testScript).cmdStdout,
@@ -544,10 +603,13 @@ func (ts *testScript) cmdCc(want simpleStatus, args []string) {
 		ts.fatalf("usage: cc args... [&]")
 	}
 
-	var b work.Builder
-	b.Init()
+	b := work.NewBuilder(ts.workdir)
+	defer func() {
+		if err := b.Close(); err != nil {
+			ts.fatalf("%v", err)
+		}
+	}()
 	ts.cmdExec(want, append(b.GccCmd(".", ""), args...))
-	robustio.RemoveAll(b.WorkDir)
 }
 
 // cd changes to a different directory.
@@ -908,6 +970,21 @@ func (ts *testScript) cmdSkip(want simpleStatus, args []string) {
 	ts.t.Skip()
 }
 
+// sleep sleeps for the given duration
+func (ts *testScript) cmdSleep(want simpleStatus, args []string) {
+	if len(args) != 1 {
+		ts.fatalf("usage: sleep duration")
+	}
+	d, err := time.ParseDuration(args[0])
+	if err != nil {
+		ts.fatalf("sleep: %v", err)
+	}
+	if want != success {
+		ts.fatalf("unsupported: %v sleep", want)
+	}
+	time.Sleep(d)
+}
+
 // stale checks that the named build targets are stale.
 func (ts *testScript) cmdStale(want simpleStatus, args []string) {
 	if len(args) == 0 {
@@ -916,9 +993,9 @@ func (ts *testScript) cmdStale(want simpleStatus, args []string) {
 	tmpl := "{{if .Error}}{{.ImportPath}}: {{.Error.Err}}{{else}}"
 	switch want {
 	case failure:
-		tmpl += "{{if .Stale}}{{.ImportPath}} is unexpectedly stale: {{.StaleReason}}{{end}}"
+		tmpl += `{{if .Stale}}{{.ImportPath}} ({{.Target}}) is unexpectedly stale:{{"\n\t"}}{{.StaleReason}}{{end}}`
 	case success:
-		tmpl += "{{if not .Stale}}{{.ImportPath}} is unexpectedly NOT stale{{end}}"
+		tmpl += "{{if not .Stale}}{{.ImportPath}} ({{.Target}}) is unexpectedly NOT stale{{end}}"
 	default:
 		ts.fatalf("unsupported: %v stale", want)
 	}
@@ -926,10 +1003,15 @@ func (ts *testScript) cmdStale(want simpleStatus, args []string) {
 	goArgs := append([]string{"list", "-e", "-f=" + tmpl}, args...)
 	stdout, stderr, err := ts.exec(testGo, goArgs...)
 	if err != nil {
+		// Print stdout before stderr, because stderr may explain the error
+		// independent of whatever we may have printed to stdout.
 		ts.fatalf("go list: %v\n%s%s", err, stdout, stderr)
 	}
 	if stdout != "" {
-		ts.fatalf("%s", stdout)
+		// Print stderr before stdout, because stderr may contain verbose
+		// debugging info (for example, if GODEBUG=gocachehash=1 is set)
+		// and we know that stdout contains a useful summary.
+		ts.fatalf("%s%s", stderr, stdout)
 	}
 }
 
@@ -1235,12 +1317,7 @@ func (ts *testScript) lookPath(command string) (string, error) {
 		}
 	}
 
-	pathName := "PATH"
-	if runtime.GOOS == "plan9" {
-		pathName = "path"
-	}
-
-	for _, dir := range strings.Split(ts.envMap[pathName], string(filepath.ListSeparator)) {
+	for _, dir := range strings.Split(ts.envMap[pathEnvName()], string(filepath.ListSeparator)) {
 		if searchExt {
 			ents, err := os.ReadDir(dir)
 			if err != nil {
@@ -1373,7 +1450,9 @@ type command struct {
 // parse parses a single line as a list of space-separated arguments
 // subject to environment variable expansion (but not resplitting).
 // Single quotes around text disable splitting and expansion.
-// To embed a single quote, double it: 'Don''t communicate by sharing memory.'
+// To embed a single quote, double it:
+//
+//	'Don''t communicate by sharing memory.'
 func (ts *testScript) parse(line string) command {
 	ts.line = line
 

@@ -39,14 +39,22 @@ Scripts also have access to these other environment variables:
 	PATH=<actual PATH>
 	TMPDIR=$WORK/tmp
 	GODEBUG=<actual GODEBUG>
+	GOCOVERDIR=<current setting of GOCOVERDIR>
 	devnull=<value of os.DevNull>
 	goversion=<current Go version; for example, 1.12>
-	:=<OS-specific path list separator>
 
-The scripts' supporting files are unpacked relative to $GOPATH/src (aka $WORK/gopath/src)
-and then the script begins execution in that directory as well. Thus the example above runs
-in $WORK/gopath/src with GOPATH=$WORK/gopath and $WORK/gopath/src/hello.go
-containing the listed contents.
+On Plan 9, the variables $path and $home are set instead of $PATH and $HOME.
+On Windows, the variables $USERPROFILE and $TMP are set instead of
+$HOME and $TMPDIR.
+
+In addition, variables named ':' and '/' are expanded within script arguments
+(expanding to the value of os.PathListSeparator and os.PathSeparator
+respectively) but are not inherited in subprocess environments.
+
+The scripts' supporting files are unpacked relative to $GOPATH/src
+(aka $WORK/gopath/src) and then the script begins execution in that directory as
+well. Thus the example above runs in $WORK/gopath/src with GOPATH=$WORK/gopath
+and $WORK/gopath/src/hello.go containing the listed contents.
 
 The lines at the top of the script are a sequence of commands to be executed
 by a tiny script engine in ../../script_test.go (not the system shell).
@@ -90,6 +98,9 @@ should only run when the condition is satisfied. The available conditions are:
    - [exec:prog] for whether prog is available for execution (found by exec.LookPath)
    - [GODEBUG:value] for whether value is one of the comma-separated entries in the GODEBUG variable
    - [buildmode:value] for whether -buildmode=value is supported
+   - [trimpath] for whether the 'go' binary was built with -trimpath
+   - [mismatched-goroot] for whether the test's GOROOT_FINAL does not match the real GOROOT
+   - [GOEXPERIMENT:expname] for whether the GOEXPERIMENT 'expname' is enabled
 
 A condition can be negated: [!short] means to run the rest of the line
 when testing.Short() is false. Multiple conditions may be given for a single
@@ -173,6 +184,11 @@ The commands are:
 
 - skip [message]
   Mark the test skipped, including the message if given.
+
+- sleep duration
+  Sleep for the given duration (a time.Duration string).
+  (Tests should generally poll instead of sleeping, but sleeping may sometimes
+  be necessary, for example, to ensure that modified files have unique mtimes.)
 
 - [!] stale path...
   The packages named by the path arguments must (or must not)

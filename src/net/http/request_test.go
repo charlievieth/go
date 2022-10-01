@@ -485,10 +485,6 @@ var readRequestErrorTests = []struct {
 	1: {"GET / HTTP/1.1\r\nheader:foo\r\n", io.ErrUnexpectedEOF.Error(), nil},
 	2: {"", io.EOF.Error(), nil},
 	3: {
-		in:  "HEAD / HTTP/1.1\r\nContent-Length:4\r\n\r\n",
-		err: "http: method cannot contain a Content-Length",
-	},
-	4: {
 		in:     "HEAD / HTTP/1.1\r\n\r\n",
 		header: Header{},
 	},
@@ -496,32 +492,32 @@ var readRequestErrorTests = []struct {
 	// Multiple Content-Length values should either be
 	// deduplicated if same or reject otherwise
 	// See Issue 16490.
-	5: {
+	4: {
 		in:  "POST / HTTP/1.1\r\nContent-Length: 10\r\nContent-Length: 0\r\n\r\nGopher hey\r\n",
 		err: "cannot contain multiple Content-Length headers",
 	},
-	6: {
+	5: {
 		in:  "POST / HTTP/1.1\r\nContent-Length: 10\r\nContent-Length: 6\r\n\r\nGopher\r\n",
 		err: "cannot contain multiple Content-Length headers",
 	},
-	7: {
+	6: {
 		in:     "PUT / HTTP/1.1\r\nContent-Length: 6 \r\nContent-Length: 6\r\nContent-Length:6\r\n\r\nGopher\r\n",
 		err:    "",
 		header: Header{"Content-Length": {"6"}},
 	},
-	8: {
+	7: {
 		in:  "PUT / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 6 \r\n\r\n",
 		err: "cannot contain multiple Content-Length headers",
 	},
-	9: {
+	8: {
 		in:  "POST / HTTP/1.1\r\nContent-Length:\r\nContent-Length: 3\r\n\r\n",
 		err: "cannot contain multiple Content-Length headers",
 	},
-	10: {
+	9: {
 		in:     "HEAD / HTTP/1.1\r\nContent-Length:0\r\nContent-Length: 0\r\n\r\n",
 		header: Header{"Content-Length": {"0"}},
 	},
-	11: {
+	10: {
 		in:  "HEAD / HTTP/1.1\r\nHost: foo\r\nHost: bar\r\n\r\n\r\n\r\n",
 		err: "too many Host headers",
 	},
@@ -815,7 +811,7 @@ func TestStarRequest(t *testing.T) {
 	clientReq := *req
 	clientReq.Body = nil
 
-	var out bytes.Buffer
+	var out strings.Builder
 	if err := clientReq.Write(&out); err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +819,7 @@ func TestStarRequest(t *testing.T) {
 	if strings.Contains(out.String(), "chunked") {
 		t.Error("wrote chunked request; want no body")
 	}
-	back, err := ReadRequest(bufio.NewReader(bytes.NewReader(out.Bytes())))
+	back, err := ReadRequest(bufio.NewReader(strings.NewReader(out.String())))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,7 +831,7 @@ func TestStarRequest(t *testing.T) {
 		t.Errorf("Original request doesn't match Request read back.")
 		t.Logf("Original: %#v", req)
 		t.Logf("Original.URL: %#v", req.URL)
-		t.Logf("Wrote: %s", out.Bytes())
+		t.Logf("Wrote: %s", out.String())
 		t.Logf("Read back (doesn't match Original): %#v", back)
 	}
 }
@@ -982,6 +978,12 @@ func TestMaxBytesReaderDifferentLimits(t *testing.T) {
 			wantN:   len(testStr),
 			wantErr: false,
 		},
+		10: { /* Issue 54408 */
+			limit:   int64(1<<63 - 1),
+			lenP:    len(testStr),
+			wantN:   len(testStr),
+			wantErr: false,
+		},
 	}
 	for i, tt := range tests {
 		rc := MaxBytesReader(nil, io.NopCloser(strings.NewReader(testStr)), tt.limit)
@@ -998,23 +1000,15 @@ func TestMaxBytesReaderDifferentLimits(t *testing.T) {
 	}
 }
 
-func TestWithContextDeepCopiesURL(t *testing.T) {
+func TestWithContextNilURL(t *testing.T) {
 	req, err := NewRequest("POST", "https://golang.org/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	reqCopy := req.WithContext(context.Background())
-	reqCopy.URL.Scheme = "http"
-
-	firstURL, secondURL := req.URL.String(), reqCopy.URL.String()
-	if firstURL == secondURL {
-		t.Errorf("unexpected change to original request's URL")
-	}
-
-	// And also check we don't crash on nil (Issue 20601)
+	// Issue 20601
 	req.URL = nil
-	reqCopy = req.WithContext(context.Background())
+	reqCopy := req.WithContext(context.Background())
 	if reqCopy.URL != nil {
 		t.Error("expected nil URL in cloned request")
 	}
@@ -1174,7 +1168,7 @@ func testMultipartFile(t *testing.T, req *Request, key, expectFilename, expectCo
 	if fh.Filename != expectFilename {
 		t.Errorf("filename = %q, want %q", fh.Filename, expectFilename)
 	}
-	var b bytes.Buffer
+	var b strings.Builder
 	_, err = io.Copy(&b, f)
 	if err != nil {
 		t.Fatal("copying contents:", err)
@@ -1183,6 +1177,47 @@ func testMultipartFile(t *testing.T, req *Request, key, expectFilename, expectCo
 		t.Errorf("contents = %q, want %q", g, expectContent)
 	}
 	return f
+}
+
+// Issue 53181: verify Request.Cookie return the correct Cookie.
+// Return ErrNoCookie instead of the first cookie when name is "".
+func TestRequestCookie(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		value       string
+		expectedErr error
+	}{
+		{
+			name:        "foo",
+			value:       "bar",
+			expectedErr: nil,
+		},
+		{
+			name:        "",
+			expectedErr: ErrNoCookie,
+		},
+	} {
+		req, err := NewRequest("GET", "http://example.com/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.AddCookie(&Cookie{Name: tt.name, Value: tt.value})
+		c, err := req.Cookie(tt.name)
+		if err != tt.expectedErr {
+			t.Errorf("got %v, want %v", err, tt.expectedErr)
+		}
+
+		// skip if error occurred.
+		if err != nil {
+			continue
+		}
+		if c.Value != tt.value {
+			t.Errorf("got %v, want %v", c.Value, tt.value)
+		}
+		if c.Name != tt.name {
+			t.Errorf("got %s, want %v", tt.name, c.Name)
+		}
+	}
 }
 
 const (

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"internal/abi"
 	"io"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -46,19 +45,21 @@ type profileBuilder struct {
 
 type memMap struct {
 	// initialized as reading mapping
-	start         uintptr
-	end           uintptr
-	offset        uint64
-	file, buildID string
+	start   uintptr // Address at which the binary (or DLL) is loaded into memory.
+	end     uintptr // The limit of the address range occupied by this mapping.
+	offset  uint64  // Offset in the binary that corresponds to the first mapped address.
+	file    string  // The object this entry is loaded from.
+	buildID string  // A string that uniquely identifies a particular program version with high probability.
 
 	funcs symbolizeFlag
 	fake  bool // map entry was faked; /proc/self/maps wasn't available
 }
 
 // symbolizeFlag keeps track of symbolization result.
-//   0                  : no symbol lookup was performed
-//   1<<0 (lookupTried) : symbol lookup was performed
-//   1<<1 (lookupFailed): symbol lookup was performed but failed
+//
+//	0                  : no symbol lookup was performed
+//	1<<0 (lookupTried) : symbol lookup was performed
+//	1<<1 (lookupFailed): symbol lookup was performed but failed
 type symbolizeFlag uint8
 
 const (
@@ -229,7 +230,7 @@ func allFrames(addr uintptr) ([]runtime.Frame, symbolizeFlag) {
 		frame.PC = addr - 1
 	}
 	ret := []runtime.Frame{frame}
-	for frame.Function != "runtime.goexit" && more == true {
+	for frame.Function != "runtime.goexit" && more {
 		frame, more = frames.Next()
 		ret = append(ret, frame)
 	}
@@ -245,9 +246,10 @@ type locInfo struct {
 	// https://github.com/golang/go/blob/d6f2f833c93a41ec1c68e49804b8387a06b131c5/src/runtime/traceback.go#L347-L368
 	pcs []uintptr
 
-	// results of allFrames call for this PC
-	frames          []runtime.Frame
-	symbolizeResult symbolizeFlag
+	// firstPCFrames and firstPCSymbolizeResult hold the results of the
+	// allFrames call for the first (leaf-most) PC this locInfo represents
+	firstPCFrames          []runtime.Frame
+	firstPCSymbolizeResult symbolizeFlag
 }
 
 // newProfileBuilder returns a new profileBuilder.
@@ -415,7 +417,7 @@ func (b *profileBuilder) appendLocsForStack(locs []uint64, stk []uintptr) (newLo
 			// stack by trying to add it to the inlining deck before assuming
 			// that the deck is complete.
 			if len(b.deck.pcs) > 0 {
-				if added := b.deck.tryAdd(addr, l.frames, l.symbolizeResult); added {
+				if added := b.deck.tryAdd(addr, l.firstPCFrames, l.firstPCSymbolizeResult); added {
 					stk = stk[1:]
 					continue
 				}
@@ -507,9 +509,10 @@ func (b *profileBuilder) appendLocsForStack(locs []uint64, stk []uintptr) (newLo
 // and looking up debug info is not ideal, so we use a heuristic to filter
 // the fake pcs and restore the inlined and entry functions. Inlined functions
 // have the following properties:
-//   Frame's Func is nil (note: also true for non-Go functions), and
-//   Frame's Entry matches its entry function frame's Entry (note: could also be true for recursive calls and non-Go functions), and
-//   Frame's Name does not match its entry function frame's name (note: inlined functions cannot be directly recursive).
+//
+//	Frame's Func is nil (note: also true for non-Go functions), and
+//	Frame's Entry matches its entry function frame's Entry (note: could also be true for recursive calls and non-Go functions), and
+//	Frame's Name does not match its entry function frame's name (note: inlined functions cannot be directly recursive).
 //
 // As reading and processing the pcs in a stack trace one by one (from leaf to the root),
 // we use pcDeck to temporarily hold the observed pcs and their expanded frames
@@ -518,12 +521,21 @@ type pcDeck struct {
 	pcs             []uintptr
 	frames          []runtime.Frame
 	symbolizeResult symbolizeFlag
+
+	// firstPCFrames indicates the number of frames associated with the first
+	// (leaf-most) PC in the deck
+	firstPCFrames int
+	// firstPCSymbolizeResult holds the results of the allFrames call for the
+	// first (leaf-most) PC in the deck
+	firstPCSymbolizeResult symbolizeFlag
 }
 
 func (d *pcDeck) reset() {
 	d.pcs = d.pcs[:0]
 	d.frames = d.frames[:0]
 	d.symbolizeResult = 0
+	d.firstPCFrames = 0
+	d.firstPCSymbolizeResult = 0
 }
 
 // tryAdd tries to add the pc and Frames expanded from it (most likely one,
@@ -552,6 +564,10 @@ func (d *pcDeck) tryAdd(pc uintptr, frames []runtime.Frame, symbolizeResult symb
 	d.pcs = append(d.pcs, pc)
 	d.frames = append(d.frames, frames...)
 	d.symbolizeResult |= symbolizeResult
+	if len(d.pcs) == 1 {
+		d.firstPCFrames = len(d.frames)
+		d.firstPCSymbolizeResult = symbolizeResult
+	}
 	return true
 }
 
@@ -579,10 +595,10 @@ func (b *profileBuilder) emitLocation() uint64 {
 
 	id := uint64(len(b.locs)) + 1
 	b.locs[addr] = locInfo{
-		id:              id,
-		pcs:             append([]uintptr{}, b.deck.pcs...),
-		symbolizeResult: b.deck.symbolizeResult,
-		frames:          append([]runtime.Frame{}, b.deck.frames...),
+		id:                     id,
+		pcs:                    append([]uintptr{}, b.deck.pcs...),
+		firstPCSymbolizeResult: b.deck.firstPCSymbolizeResult,
+		firstPCFrames:          append([]runtime.Frame{}, b.deck.frames[:b.deck.firstPCFrames]...),
 	}
 
 	start := b.pb.startMessage()
@@ -622,20 +638,6 @@ func (b *profileBuilder) emitLocation() uint64 {
 
 	b.flush()
 	return id
-}
-
-// readMapping reads /proc/self/maps and writes mappings to b.pb.
-// It saves the address ranges of the mappings in b.mem for use
-// when emitting locations.
-func (b *profileBuilder) readMapping() {
-	data, _ := os.ReadFile("/proc/self/maps")
-	parseProcSelfMaps(data, b.addMapping)
-	if len(b.mem) == 0 { // pprof expects a map entry, so fake one.
-		b.addMappingEntry(0, 0, 0, "", "", true)
-		// TODO(hyangah): make addMapping return *memMap or
-		// take a memMap struct, and get rid of addMappingEntry
-		// that takes a bunch of positional arguments.
-	}
 }
 
 var space = []byte(" ")
@@ -719,13 +721,12 @@ func parseProcSelfMaps(data []byte, addMapping func(lo, hi, offset uint64, file,
 			continue
 		}
 
-		// TODO: pprof's remapMappingIDs makes two adjustments:
+		// TODO: pprof's remapMappingIDs makes one adjustment:
 		// 1. If there is an /anon_hugepage mapping first and it is
 		// consecutive to a next mapping, drop the /anon_hugepage.
-		// 2. If start-offset = 0x400000, change start to 0x400000 and offset to 0.
-		// There's no indication why either of these is needed.
-		// Let's try not doing these and see what breaks.
-		// If we do need them, they would go here, before we
+		// There's no indication why this is needed.
+		// Let's try not doing this and see what breaks.
+		// If we do need it, it would go here, before we
 		// enter the mappings into b.mem in the first place.
 
 		buildID, _ := elfBuildID(file)

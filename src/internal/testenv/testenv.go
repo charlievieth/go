@@ -35,7 +35,7 @@ func Builder() string {
 	return os.Getenv("GO_BUILDER_NAME")
 }
 
-// HasGoBuild reports whether the current system can build programs with ``go build''
+// HasGoBuild reports whether the current system can build programs with “go build”
 // and then run them with os.StartProcess or exec.Command.
 func HasGoBuild() bool {
 	if os.Getenv("GO_GCFLAGS") != "" {
@@ -52,7 +52,7 @@ func HasGoBuild() bool {
 	return true
 }
 
-// MustHaveGoBuild checks that the current system can build programs with ``go build''
+// MustHaveGoBuild checks that the current system can build programs with “go build”
 // and then run them with os.StartProcess or exec.Command.
 // If not, MustHaveGoBuild calls t.Skip with an explanation.
 func MustHaveGoBuild(t testing.TB) {
@@ -64,13 +64,13 @@ func MustHaveGoBuild(t testing.TB) {
 	}
 }
 
-// HasGoRun reports whether the current system can run programs with ``go run.''
+// HasGoRun reports whether the current system can run programs with “go run.”
 func HasGoRun() bool {
 	// For now, having go run and having go build are the same.
 	return HasGoBuild()
 }
 
-// MustHaveGoRun checks that the current system can run programs with ``go run.''
+// MustHaveGoRun checks that the current system can run programs with “go run.”
 // If not, MustHaveGoRun calls t.Skip with an explanation.
 func MustHaveGoRun(t testing.TB) {
 	if !HasGoRun() {
@@ -405,6 +405,14 @@ func SkipIfShortAndSlow(t testing.TB) {
 	if testing.Short() && CPUIsSlow() {
 		t.Helper()
 		t.Skipf("skipping test in -short mode on %s", runtime.GOARCH)
+	}
+}
+
+// SkipIfOptimizationOff skips t if optimization is disabled.
+func SkipIfOptimizationOff(t testing.TB) {
+	if OptimizationOff() {
+		t.Helper()
+		t.Skip("skipping test with optimization disabled")
 	}
 }
 

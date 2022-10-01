@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"internal/intern"
+	"internal/testenv"
 	"net"
 	. "net/netip"
 	"reflect"
@@ -1757,7 +1758,7 @@ func TestPrefixOverlaps(t *testing.T) {
 		{pfx("1::1/128"), pfx("2::2/128"), false},
 		{pfx("0100::0/8"), pfx("::1/128"), false},
 
-		// IPv4-mapped IPv6 should not overlap with IPv4.
+		// IPv4-mapped IPv6 addresses should not overlap with IPv4.
 		{PrefixFrom(AddrFrom16(mustIP("1.2.0.0").As16()), 16), pfx("1.2.3.0/24"), false},
 
 		// Invalid prefixes
@@ -1892,6 +1893,36 @@ func TestNoAllocs(t *testing.T) {
 	test("Prefix.IsZero", func() { sinkBool = MustParsePrefix("1.2.0.0/16").IsZero() })
 	test("Prefix.IsSingleIP", func() { sinkBool = MustParsePrefix("1.2.3.4/32").IsSingleIP() })
 	test("IPPRefix.Masked", func() { sinkPrefix = MustParsePrefix("1.2.3.4/16").Masked() })
+}
+
+func TestAddrStringAllocs(t *testing.T) {
+	tests := []struct {
+		name       string
+		ip         Addr
+		wantAllocs int
+	}{
+		{"zero", Addr{}, 0},
+		{"ipv4", MustParseAddr("192.168.1.1"), 1},
+		{"ipv6", MustParseAddr("2001:db8::1"), 1},
+		{"ipv6+zone", MustParseAddr("2001:db8::1%eth0"), 1},
+		{"ipv4-in-ipv6", MustParseAddr("::ffff:192.168.1.1"), 1},
+		{"ipv4-in-ipv6+zone", MustParseAddr("::ffff:192.168.1.1%eth0"), 1},
+	}
+	optimizationOff := testenv.OptimizationOff()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if optimizationOff && strings.HasPrefix(tc.name, "ipv4-in-ipv6") {
+				// Optimizations are required to remove some allocs.
+				t.Skipf("skipping on %v", testenv.Builder())
+			}
+			allocs := int(testing.AllocsPerRun(1000, func() {
+				sinkString = tc.ip.String()
+			}))
+			if allocs != tc.wantAllocs {
+				t.Errorf("allocs=%d, want %d", allocs, tc.wantAllocs)
+			}
+		})
+	}
 }
 
 func TestPrefixString(t *testing.T) {

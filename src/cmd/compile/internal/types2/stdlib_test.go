@@ -197,6 +197,17 @@ func TestStdFixed(t *testing.T) {
 		"issue48230.go",  // go/types doesn't check validity of //go:xxx directives
 		"issue49767.go",  // go/types does not have constraints on channel element size
 		"issue49814.go",  // go/types does not have constraints on array size
+
+		// These tests requires runtime/cgo.Incomplete, which is only available on some platforms.
+		// However, types2 does not know about build constraints.
+		"bug514.go",
+		"issue40954.go",
+		"issue42032.go",
+		"issue42076.go",
+		"issue46903.go",
+		"issue51733.go",
+		"notinheap2.go",
+		"notinheap3.go",
 	)
 }
 
@@ -211,7 +222,7 @@ var excluded = map[string]bool{
 	"builtin": true,
 
 	// See #46027: some imports are missing for this submodule.
-	"crypto/ed25519/internal/edwards25519/field/_asm": true,
+	"crypto/internal/edwards25519/field/_asm": true,
 }
 
 // typecheck typechecks the given package files.
@@ -220,7 +231,7 @@ func typecheck(t *testing.T, path string, filenames []string) {
 	var files []*syntax.File
 	for _, filename := range filenames {
 		errh := func(err error) { t.Error(err) }
-		file, err := syntax.ParseFile(filename, errh, nil, syntax.AllowGenerics)
+		file, err := syntax.ParseFile(filename, errh, nil, 0)
 		if err != nil {
 			return
 		}
