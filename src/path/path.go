@@ -11,41 +11,41 @@
 // operating system paths, use the path/filepath package.
 package path
 
-// A lazybuf is a lazily constructed path buffer.
-// It supports append, reading previously appended bytes,
-// and retrieving the final string. It does not allocate a buffer
-// to hold the output until that output diverges from s.
-type lazybuf struct {
-	s   string
-	buf []byte
-	w   int
-}
-
-func (b *lazybuf) index(i int) byte {
-	if b.buf != nil {
-		return b.buf[i]
-	}
-	return b.s[i]
-}
-
-func (b *lazybuf) append(c byte) {
-	if b.buf == nil {
-		if b.w < len(b.s) && b.s[b.w] == c {
-			b.w++
-			return
+func cleanIndex(path string) int {
+	// rooted := path[0] == '/'
+	for i := 0; i < len(path)-1; i++ {
+		// if path[i] == '/' && (path[i+1] == '/' || path[i+1] == '.') {
+		switch {
+		case path[i] == '/' && path[i+1] == '/':
+			return i
+		case path[i] == '.' && (path[i+1] == '.' || path[i+1] == '/'):
+			if i > 0 {
+				i--
+			}
+			for ; i > 0 && path[i] != '/'; i-- {
+			}
+			return i
 		}
-		b.buf = make([]byte, len(b.s))
-		copy(b.buf, b.s[:b.w])
-	}
-	b.buf[b.w] = c
-	b.w++
-}
+		// if path[i] == '/' && path[i+1] == '/' {
+		// 	return i
+		// }
+		// if path[i] == '.' && (path[i+1] == '.' || path[i+1] == '/') {
+		// 	// backtrack to the last '/'
+		// 	// if !rooted {
 
-func (b *lazybuf) string() string {
-	if b.buf == nil {
-		return b.s[:b.w]
+		// 	// WARN WARN WARN WARN
+		// 	// This is probably wrong
+		// 	// WARN WARN WARN WARN
+
+		// 	if i > 0 {
+		// 		i--
+		// 	}
+		// 	for ; i > 0 && path[i] != '/'; i-- {
+		// 	}
+		// 	return i
+		// }
 	}
-	return string(b.buf[:b.w])
+	return -1
 }
 
 // Clean returns the shortest path name equivalent to path
@@ -68,54 +68,62 @@ func (b *lazybuf) string() string {
 // Getting Dot-Dot Right,”
 // https://9p.io/sys/doc/lexnames.html
 func Clean(path string) string {
-	// Remove leading "./" and any extra slashes (".//a" => "a")
-	if len(path) >= 2 && path[:2] == "./" {
+	// Remove leading "./" and any extra leading slashes (".//a" => "a").
+	for len(path) >= 2 && path[:2] == "./" {
 		path = path[2:]
 		for path != "" && path[0] == '/' {
 			path = path[1:]
 		}
 	}
+
+	// WARN: can this be improved and still be fast?
+
+	// CEV: we need to do this because cleanIndex does not detect trailing
+	// slash dot ("/.") elements.
+
+	// Remove any traling slashes.
+	path = trimTrailingSlashes(path)
+
+	// Remove any traling slashes and dot slashes ("./").
+	for len(path) >= 2 && path[len(path)-2:] == "/." {
+		path = path[:len(path)-2]
+	}
+	path = trimTrailingSlashes(path)
+
 	if path == "" {
 		return "."
 	}
 
-	path = trimTrailingSlashes(path)
-	n := len(path)
-	rooted := path[0] == '/'
-
+	// WARN WARN WARN: no longer accurate
+	//
 	// Invariants:
 	//	reading from path; r is index of next byte to process.
 	//	writing to buf; w is index of next byte to write.
 	//	dotdot is index in buf where .. must stop, either because
 	//		it is the leading slash or it is a leading ../../.. prefix.
-	out := lazybuf{s: path}
-	r, dotdot := 0, 0
+
+	r := cleanIndex(path)
+	if r == -1 {
+		return path
+	}
+	// if r == -1 {
+	// 	r = 0
+	// }
+	dotdot := 0
+	rooted := path[0] == '/'
 	if rooted {
-		out.append('/')
-		r, dotdot = 1, 1
-	}
-
-	// Fast path for clean paths. The check is imprecise and will mark
-	// some clean paths like "a/.git" and "a/..." as dirty, but is still
-	// faster than just using the big "dirty" loop below.
-	for i := 0; i < n-1; i++ {
-		if path[i] == '/' && (path[i+1] == '/' || path[i+1] == '.') {
-			if i != 0 {
-				r = i
-				out.w = i
-			}
-			goto Dirty
-		}
-		if path[i] == '.' && path[i+1] == '/' {
-			// It's faster to not update r and out.w here because paths
-			// like ".../" require us to backtrack or check that i+2 == n
-			// or i+2 == '/'.
-			goto Dirty
+		dotdot = 1
+		if r == 0 {
+			r = 1
 		}
 	}
-	return path
+	// if i != 0 {
+	// 	r = i
+	// }
+	buf := []byte(path)
+	buf = buf[:r]
 
-Dirty:
+	n := len(path)
 	for r < n {
 		switch {
 		case path[r] == '/':
@@ -128,43 +136,44 @@ Dirty:
 			// .. element: remove to last /
 			r += 2
 			switch {
-			case out.w > dotdot:
-				// can backtrack
-				out.w--
-				for out.w > dotdot && out.index(out.w) != '/' {
-					out.w--
+			case len(buf) > dotdot:
+				i := len(buf) - 1
+				for i > dotdot && buf[i] != '/' {
+					i--
 				}
+				buf = buf[:i]
 			case !rooted:
 				// cannot backtrack, but not rooted, so append .. element.
-				if out.w > 0 {
-					out.append('/')
+				if len(buf) > 0 {
+					buf = append(buf, '/')
 				}
-				out.append('.')
-				out.append('.')
-				dotdot = out.w
+				buf = append(buf, '.')
+				buf = append(buf, '.')
+				dotdot = len(buf)
 			}
 		default:
 			// real path element.
 			// add slash if needed
-			if rooted && out.w != 1 || !rooted && out.w != 0 {
-				out.append('/')
+			if rooted && len(buf) != 1 || !rooted && len(buf) != 0 {
+				buf = append(buf, '/')
 			}
 			// copy element
 			for ; r < n && path[r] != '/'; r++ {
-				out.append(path[r])
+				buf = append(buf, path[r])
 			}
 		}
 	}
 
-	// Turn empty string into "."
-	if out.w == 0 {
+	if len(buf) == 0 {
 		return "."
 	}
-
-	return out.string()
+	if string(buf) == path[:len(buf)] {
+		return path[:len(buf)]
+	}
+	return string(buf)
 }
 
-// trimTrailingSlashes is strings.TrimRight(s[:1], "/") but we can't import
+// trimTrailingSlashes is strings.TrimRight(s[1:], "/") but we can't import
 // strings. If s is entirely slashes, "/" is returned.
 func trimTrailingSlashes(s string) string {
 	i := len(s) - 1
@@ -172,6 +181,12 @@ func trimTrailingSlashes(s string) string {
 		i--
 	}
 	return s[:i+1]
+	// for i := len(s) - 1; i >= 0; i-- {
+	// 	if s[i] != '/' {
+	// 		return s[:i+1]
+	// 	}
+	// }
+	// return "/"
 }
 
 // lastSlash(s) is strings.LastIndex(s, "/") but we can't import strings.

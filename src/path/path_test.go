@@ -266,9 +266,24 @@ func BenchmarkClean(b *testing.B) {
 			Clean("/home/user/go/src/golang.org/x/tools/gopls")
 		}
 	})
+	b.Run("CleanDot", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			Clean("/home/user/go/src/golang.org/x/tools/.git")
+		}
+	})
 	b.Run("Dirty", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			Clean("/home/user/go/src/../src/golang.org/x/tools/gopls/")
+		}
+	})
+	b.Run("Hard", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			Clean("/home/user/go/src./../.src/../golang.org/x/tools/gopls/")
+		}
+	})
+	b.Run("Relative", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			Clean("../user/go/src./../.src/../golang.org/x/tools/gopls/")
 		}
 	})
 	b.Run("Mod", func(b *testing.B) {
