@@ -420,6 +420,12 @@ var simpleFoldTests = []string{
 
 	// Upper comes before lower (Cherokee).
 	"\u13b0\uab80",
+
+	// Upper comes before lower but not case fold (Dutch).
+	"\u0133\u0132",
+
+	// Graphic no fold.
+	"☻☻",
 }
 
 func TestSimpleFold(t *testing.T) {
@@ -641,4 +647,42 @@ func TestNegativeRune(t *testing.T) {
 			t.Errorf("IsUpper(0x%x - 1<<31) = true, want false", base)
 		}
 	}
+}
+
+var simpleFoldBenchTests []rune
+
+func BenchmarkSimpleFold(b *testing.B) {
+	b.Run("Tests", func(b *testing.B) {
+		if simpleFoldBenchTests == nil {
+			for _, tt := range simpleFoldTests {
+				for _, r := range tt {
+					simpleFoldBenchTests = append(simpleFoldBenchTests, r)
+				}
+			}
+			b.ResetTimer()
+		}
+		for i := 0; i < b.N; i++ {
+			for _, r := range simpleFoldBenchTests {
+				SimpleFold(r)
+			}
+		}
+	})
+
+	b.Run("Fold", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			SimpleFold('\u212A')
+		}
+	})
+
+	b.Run("NoFold", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			SimpleFold('\u0133')
+		}
+	})
+
+	b.Run("Graphic", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			SimpleFold('☻')
+		}
+	})
 }
