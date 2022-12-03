@@ -11,42 +11,7 @@
 // operating system paths, use the path/filepath package.
 package path
 
-func cleanIndex(path string) int {
-	// rooted := path[0] == '/'
-	for i := 0; i < len(path)-1; i++ {
-		// if path[i] == '/' && (path[i+1] == '/' || path[i+1] == '.') {
-		switch {
-		case path[i] == '/' && path[i+1] == '/':
-			return i
-		case path[i] == '.' && (path[i+1] == '.' || path[i+1] == '/'):
-			if i > 0 {
-				i--
-			}
-			for ; i > 0 && path[i] != '/'; i-- {
-			}
-			return i
-		}
-		// if path[i] == '/' && path[i+1] == '/' {
-		// 	return i
-		// }
-		// if path[i] == '.' && (path[i+1] == '.' || path[i+1] == '/') {
-		// 	// backtrack to the last '/'
-		// 	// if !rooted {
-
-		// 	// WARN WARN WARN WARN
-		// 	// This is probably wrong
-		// 	// WARN WARN WARN WARN
-
-		// 	if i > 0 {
-		// 		i--
-		// 	}
-		// 	for ; i > 0 && path[i] != '/'; i-- {
-		// 	}
-		// 	return i
-		// }
-	}
-	return -1
-}
+import "unsafe"
 
 // Clean returns the shortest path name equivalent to path
 // by purely lexical processing. It applies the following rules
@@ -106,9 +71,7 @@ func Clean(path string) string {
 	if r == -1 {
 		return path
 	}
-	// if r == -1 {
-	// 	r = 0
-	// }
+
 	dotdot := 0
 	rooted := path[0] == '/'
 	if rooted {
@@ -117,11 +80,8 @@ func Clean(path string) string {
 			r = 1
 		}
 	}
-	// if i != 0 {
-	// 	r = i
-	// }
 	buf := []byte(path)
-	buf = buf[:r]
+	buf = buf[:r] // [:r] is clean
 
 	n := len(path)
 	for r < n {
@@ -170,7 +130,24 @@ func Clean(path string) string {
 	if string(buf) == path[:len(buf)] {
 		return path[:len(buf)]
 	}
-	return string(buf)
+	return unsafe.String(&buf[0], len(buf))
+}
+
+func cleanIndex(path string) int {
+	for i := 0; i < len(path)-1; i++ {
+		switch {
+		case path[i] == '/' && path[i+1] == '/':
+			return i
+		case path[i] == '.' && (path[i+1] == '.' || path[i+1] == '/'):
+			if i > 0 {
+				i--
+			}
+			for ; i > 0 && path[i] != '/'; i-- {
+			}
+			return i
+		}
+	}
+	return -1
 }
 
 // trimTrailingSlashes is strings.TrimRight(s[1:], "/") but we can't import
@@ -181,12 +158,6 @@ func trimTrailingSlashes(s string) string {
 		i--
 	}
 	return s[:i+1]
-	// for i := len(s) - 1; i >= 0; i-- {
-	// 	if s[i] != '/' {
-	// 		return s[:i+1]
-	// 	}
-	// }
-	// return "/"
 }
 
 // lastSlash(s) is strings.LastIndex(s, "/") but we can't import strings.
