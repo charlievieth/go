@@ -206,12 +206,9 @@ func IsTitle(r rune) bool {
 	return isExcludingLatin(Title, r)
 }
 
-// to maps the rune using the specified case mapping.
-// It additionally reports whether caseRange contained a mapping for r.
-func to(_case int, r rune, caseRange []CaseRange) (mappedRune rune, foundMapping bool) {
-	if _case < 0 || MaxCase <= _case {
-		return ReplacementChar, false // as reasonable an error as any
-	}
+// searchCaseRange performs a binary search of caseRange for r. If r is not
+// found, nil is returned.
+func searchCaseRange(r rune, caseRange []CaseRange) *CaseRange {
 	// binary search over ranges
 	lo := 0
 	hi := len(caseRange)
@@ -219,21 +216,7 @@ func to(_case int, r rune, caseRange []CaseRange) (mappedRune rune, foundMapping
 		m := lo + (hi-lo)/2
 		cr := caseRange[m]
 		if rune(cr.Lo) <= r && r <= rune(cr.Hi) {
-			delta := cr.Delta[_case]
-			if delta > MaxRune {
-				// In an Upper-Lower sequence, which always starts with
-				// an UpperCase letter, the real deltas always look like:
-				//	{0, 1, 0}    UpperCase (Lower is next)
-				//	{-1, 0, -1}  LowerCase (Upper, Title are previous)
-				// The characters at even offsets from the beginning of the
-				// sequence are upper case; the ones at odd offsets are lower.
-				// The correct mapping can be done by clearing or setting the low
-				// bit in the sequence offset.
-				// The constants UpperCase and TitleCase are even while LowerCase
-				// is odd so we take the low bit from _case.
-				return rune(cr.Lo) + ((r-rune(cr.Lo))&^1 | rune(_case&1)), true
-			}
-			return r + delta, true
+			return &caseRange[m]
 		}
 		if r < rune(cr.Lo) {
 			hi = m
@@ -241,7 +224,52 @@ func to(_case int, r rune, caseRange []CaseRange) (mappedRune rune, foundMapping
 			lo = m + 1
 		}
 	}
+	return nil
+}
+
+// to maps the rune using the specified case mapping.
+// It additionally reports whether caseRange contained a mapping for r.
+func to(_case int, r rune, caseRange []CaseRange) (mappedRune rune, foundMapping bool) {
+	if _case < 0 || MaxCase <= _case {
+		return ReplacementChar, false // as reasonable an error as any
+	}
+	if cr := searchCaseRange(r, caseRange); cr != nil {
+		delta := cr.Delta[_case]
+		if delta > MaxRune {
+			// In an Upper-Lower sequence, which always starts with
+			// an UpperCase letter, the real deltas always look like:
+			//	{0, 1, 0}    UpperCase (Lower is next)
+			//	{-1, 0, -1}  LowerCase (Upper, Title are previous)
+			// The characters at even offsets from the beginning of the
+			// sequence are upper case; the ones at odd offsets are lower.
+			// The correct mapping can be done by clearing or setting the low
+			// bit in the sequence offset.
+			// The constants UpperCase and TitleCase are even while LowerCase
+			// is odd so we take the low bit from _case.
+			return rune(cr.Lo) + ((r-rune(cr.Lo))&^1 | rune(_case&1)), true
+		}
+		return r + delta, true
+	}
 	return r, false
+}
+
+// toUpperLower combines ToUpper and ToLower in one function.
+func toUpperLower(r rune) (upper, lower rune, foundMapping bool) {
+	if cr := searchCaseRange(r, CaseRanges); cr != nil {
+		if delta := cr.Delta[UpperCase]; delta > MaxRune {
+			// See the comment in to() for reference.
+			upper = rune(cr.Lo) + ((r-rune(cr.Lo))&^1 | rune(UpperCase&1))
+		} else {
+			upper = r + delta
+		}
+		if delta := cr.Delta[LowerCase]; delta > MaxRune {
+			lower = rune(cr.Lo) + ((r-rune(cr.Lo))&^1 | rune(LowerCase&1))
+		} else {
+			lower = r + delta
+		}
+		return upper, lower, true
+	}
+	return r, r, false
 }
 
 // To maps the rune to the specified case: UpperCase, LowerCase, or TitleCase.
@@ -364,8 +392,9 @@ func SimpleFold(r rune) rune {
 	// No folding specified. This is a one- or two-element
 	// equivalence class containing rune and ToLower(rune)
 	// and ToUpper(rune) if they are different from rune.
-	if l := ToLower(r); l != r {
+	u, l, _ := toUpperLower(r)
+	if l != r {
 		return l
 	}
-	return ToUpper(r)
+	return u
 }
