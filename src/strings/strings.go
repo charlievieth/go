@@ -141,71 +141,53 @@ func IndexRune(s string, r rune) int {
 	case !utf8.ValidRune(r):
 		return -1
 	default:
-		// var n int
-		// var c0, c1, c2, c3 byte
-		// // Inlined version of utf8.EncodeRune
-		// {
-		// 	const (
-		// 		t1 = 0b00000000
-		// 		tx = 0b10000000
-		// 		t2 = 0b11000000
-		// 		t3 = 0b11100000
-		// 		t4 = 0b11110000
-		//
-		// 		maskx = 0b00111111
-		//
-		// 		rune1Max = 1<<7 - 1
-		// 		rune2Max = 1<<11 - 1
-		// 		rune3Max = 1<<16 - 1
-		// 	)
-		// 	switch i := uint32(r); {
-		// 	case i <= rune2Max:
-		// 		c0 = t2 | byte(r>>6)
-		// 		c1 = tx | byte(r)&maskx
-		// 		n = 2
-		// 	// NB: removed the invalid rune check since that is
-		// 	// performed above.
-		// 	case i <= rune3Max:
-		// 		c0 = t3 | byte(r>>12)
-		// 		c1 = tx | byte(r>>6)&maskx
-		// 		c2 = tx | byte(r)&maskx
-		// 		n = 3
-		// 	default:
-		// 		c0 = t4 | byte(r>>18)
-		// 		c1 = tx | byte(r>>12)&maskx
-		// 		c2 = tx | byte(r>>6)&maskx
-		// 		c3 = tx | byte(r)&maskx
-		// 		n = 4
-		// 	}
-		// }
-		// if n >= len(s) {
-		// 	if string(r) == s {
-		// 		return 0
-		// 	}
-		// 	return -1
-		// }
-		// NOTE: searching for the last byte was not always faster (so maybe
-		// not worth investigating in the future).
-		//
-		// Search for r using the second byte of its UTF-8 encoded form
-		// since it is more unique than the first byte. This 4-5x faster
-		// when all the text is Unicode.
-		x := string(r)
-		n := len(x)
-		if len(s) <= n {
-			if s == x {
-				// println("# s: '" + s + "' r: '" + x + "': 0")
+		var n int
+		var c0, c1, c2, c3 byte
+		// Inlined version of utf8.EncodeRune without the invalid rune check
+		// since that is handled above.
+		const (
+			t1 = 0b00000000
+			tx = 0b10000000
+			t2 = 0b11000000
+			t3 = 0b11100000
+			t4 = 0b11110000
+
+			maskx = 0b00111111
+
+			rune1Max = 1<<7 - 1
+			rune2Max = 1<<11 - 1
+			rune3Max = 1<<16 - 1
+		)
+		switch i := uint32(r); {
+		case i <= rune2Max:
+			c0 = t2 | byte(r>>6)
+			c1 = tx | byte(r)&maskx
+			n = 2
+		case i <= rune3Max:
+			c0 = t3 | byte(r>>12)
+			c1 = tx | byte(r>>6)&maskx
+			c2 = tx | byte(r)&maskx
+			n = 3
+		default:
+			c0 = t4 | byte(r>>18)
+			c1 = tx | byte(r>>12)&maskx
+			c2 = tx | byte(r>>6)&maskx
+			c3 = tx | byte(r)&maskx
+			n = 4
+		}
+		if t := len(s); n >= t {
+			if t == n && string(r) == s {
 				return 0
 			}
-			// println("# s: '" + s + "' r: '" + x + "': -1")
 			return -1
 		}
+		// Search for r using the second byte of its UTF-8 encoded form since
+		// it is more unique than the first byte. This significantly faster
+		// when all the text is Unicode.
 		switch n {
 		case 2:
 			fails := 0
 			i := 1
-			c0 := x[0]
-			c1 := x[1]
 			t := len(s)
 			for i < t {
 				if s[i] != c1 {
@@ -228,9 +210,6 @@ func IndexRune(s string, r rune) int {
 				}
 			}
 		case 3:
-			c0 := x[0]
-			c1 := x[1]
-			c2 := x[2]
 			fails := 0
 			i := 1
 			t := len(s) - 1
@@ -255,10 +234,6 @@ func IndexRune(s string, r rune) int {
 				}
 			}
 		case 4:
-			c0 := x[0]
-			c1 := x[1]
-			c2 := x[2]
-			c3 := x[3]
 			fails := 0
 			i := 1
 			t := len(s) - 2
