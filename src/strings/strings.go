@@ -126,8 +126,6 @@ func IndexRune(s string, r rune) int {
 	// TODO: consider searching for the first byte if it is not one of:
 	// 240, 243, or 244 (which are the first byte of ~78% of multi-byte
 	// Unicode characters).
-	//
-	// TODO: remove check for invalid runes, if possible
 	switch {
 	case 0 <= r && r < utf8.RuneSelf:
 		return IndexByte(s, byte(r))
@@ -176,7 +174,7 @@ func IndexRune(s string, r rune) int {
 			n = 4
 		}
 		if t := len(s); n >= t {
-			if t == n && string(r) == s {
+			if n == t && string(r) == s {
 				return 0
 			}
 			return -1
@@ -187,11 +185,9 @@ func IndexRune(s string, r rune) int {
 		switch n {
 		case 2:
 			fails := 0
-			i := 1
-			t := len(s)
-			for i < t {
+			for i := 1; i < len(s); {
 				if s[i] != c1 {
-					o := IndexByte(s[i+1:t], c1)
+					o := IndexByte(s[i+1:], c1)
 					if o < 0 {
 						return -1
 					}
@@ -211,11 +207,9 @@ func IndexRune(s string, r rune) int {
 			}
 		case 3:
 			fails := 0
-			i := 1
-			t := len(s) - 1
-			for i < t {
+			for i := 1; i < len(s)-1; {
 				if s[i] != c1 {
-					o := IndexByte(s[i+1:t], c1)
+					o := IndexByte(s[i+1:len(s)-1], c1)
 					if o < 0 {
 						return -1
 					}
@@ -235,11 +229,9 @@ func IndexRune(s string, r rune) int {
 			}
 		case 4:
 			fails := 0
-			i := 1
-			t := len(s) - 2
-			for i < t {
+			for i := 1; i < len(s)-2; {
 				if s[i] != c1 {
-					o := IndexByte(s[i+1:t], c1)
+					o := IndexByte(s[i+1:len(s)-2], c1)
 					if o < 0 {
 						return -1
 					}
