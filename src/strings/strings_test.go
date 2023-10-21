@@ -318,13 +318,13 @@ func TestIndexRune(t *testing.T) {
 		{space128 + "世  ", '世', 128},
 		{space128 + "a  ", '世', -1},
 		{Repeat("丗", 48) + "世", '世', 144}, // test cutover
-		{Repeat("丗", 16), '世', -1},
+		{Repeat("丗", 48), '世', -1},
 
 		// 4 bytes
 		{space128 + "𐀀  ", '𐀀', 128},
 		{space128 + "a  ", '𐀀', -1},
 		{Repeat("𐀁", 32) + "𐀀", '𐀀', 128}, // test cutover
-		{Repeat("𐀁", 16), '𐀀', -1},
+		{Repeat("𐀁", 32), '𐀀', -1},
 	}
 	for _, tt := range tests {
 		if got := IndexRune(tt.in, tt.rune); got != tt.want {
@@ -356,8 +356,6 @@ func BenchmarkIndexRune(b *testing.B) {
 		IndexRune(benchmarkString, '☺')
 	}
 }
-
-// 0x10291
 
 func BenchmarkIndexRuneShort(b *testing.B) {
 	if got := IndexRune(benchmarkString, '☺'); got != 14 {
@@ -396,11 +394,17 @@ func BenchmarkIndexRuneCutover(b *testing.B) {
 	})
 }
 
-// WARN: rename
-func BenchmarkIndexRuneOne(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		IndexRune("a", 'β')
-	}
+func BenchmarkIndexRuneOneCodePoint(b *testing.B) {
+	b.Run("Match", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			IndexRune("β", 'β')
+		}
+	})
+	b.Run("NoMatch", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			IndexRune("a", 'β')
+		}
+	})
 }
 
 var benchmarkLongString = Repeat(" ", 100) + benchmarkString

@@ -168,12 +168,28 @@ func IndexRune(s string, r rune) int {
 			c3 = tx | byte(r)&maskx
 			n = 4
 		}
+
 		if t := len(s); n >= t {
-			if n == t && string(r) == s {
-				return 0
+			if n == t {
+				// This is about ~2x faster than comparing with string(r).
+				switch n {
+				case 2:
+					if c0 == s[0] && c1 == s[1] {
+						return 0
+					}
+				case 3:
+					if c0 == s[0] && c1 == s[1] && c2 == s[2] {
+						return 0
+					}
+				case 4:
+					if c0 == s[0] && c1 == s[1] && c2 == s[2] && c3 == s[3] {
+						return 0
+					}
+				}
 			}
 			return -1
 		}
+
 		// Search for rune r using the second byte of its UTF-8 encoded form.
 		// The distribution of the second byte is more uniform compared to the
 		// first byte which has a ~78% chance of being [240, 243, 244].
