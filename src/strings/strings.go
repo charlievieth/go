@@ -141,17 +141,15 @@ func IndexRune(s string, r rune) int {
 	default:
 		var n int
 		var c0, c1, c2, c3 byte
-		// Inlined version of utf8.EncodeRune without the invalid rune check
+		// Inlined version of utf8.EncodeRune without an invalid rune check
 		// since that is handled above.
 		const (
-			t1 = 0b00000000
-			tx = 0b10000000
-			t2 = 0b11000000
-			t3 = 0b11100000
-			t4 = 0b11110000
-
-			maskx = 0b00111111
-
+			t1       = 0b00000000
+			tx       = 0b10000000
+			t2       = 0b11000000
+			t3       = 0b11100000
+			t4       = 0b11110000
+			maskx    = 0b00111111
 			rune1Max = 1<<7 - 1
 			rune2Max = 1<<11 - 1
 			rune3Max = 1<<16 - 1
@@ -179,6 +177,11 @@ func IndexRune(s string, r rune) int {
 			}
 			return -1
 		}
+		// Search for rune r using the second byte of its UTF-8 encoded form
+		// since the second byte is more unique than the first byte.
+		//
+		// The ~78% of multibyte runes start with: [240, 243, 244].
+		//
 		// Search for r using the second byte of its UTF-8 encoded form since
 		// it is more unique than the first byte. This significantly faster
 		// when all the text is Unicode.
@@ -199,8 +202,9 @@ func IndexRune(s string, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					if j := Index(s[i:], string(r)); j != -1 {
-						return i + j
+					r := bytealg.IndexString(s[i:], string(r))
+					if r >= 0 {
+						return r + i
 					}
 					return -1
 				}
@@ -221,8 +225,9 @@ func IndexRune(s string, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					if j := Index(s[i:], string(r)); j != -1 {
-						return i + j
+					r := bytealg.IndexString(s[i:], string(r))
+					if r >= 0 {
+						return r + i
 					}
 					return -1
 				}
@@ -243,8 +248,9 @@ func IndexRune(s string, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					if j := Index(s[i:], string(r)); j != -1 {
-						return i + j
+					r := bytealg.IndexString(s[i:], string(r))
+					if r >= 0 {
+						return r + i
 					}
 					return -1
 				}
