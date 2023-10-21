@@ -338,6 +338,20 @@ func BenchmarkIndexRune(b *testing.B) {
 	}
 }
 
+func BenchmarkIndexRuneUnicode(b *testing.B) {
+	const str = benchmarkString + "αβδ"
+	for i := 0; i < b.N; i++ {
+		IndexRune(benchmarkString, 'β')
+	}
+}
+
+// WARN: rename
+func BenchmarkIndexRuneOne(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		IndexRune("a", 'β')
+	}
+}
+
 var benchmarkLongString = Repeat(" ", 100) + benchmarkString
 
 func BenchmarkIndexRuneLongString(b *testing.B) {
