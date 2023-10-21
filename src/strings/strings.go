@@ -123,6 +123,11 @@ func IndexByte(s string, c byte) int {
 // If r is utf8.RuneError, it returns the first instance of any
 // invalid UTF-8 byte sequence.
 func IndexRune(s string, r rune) int {
+	// TODO: consider searching for the first byte if it is not one of:
+	// 240, 243, or 244 (which are the first byte of ~78% of multi-byte
+	// Unicode characters).
+	//
+	// TODO: remove check for invalid runes, if possible
 	switch {
 	case 0 <= r && r < utf8.RuneSelf:
 		return IndexByte(s, byte(r))
@@ -136,7 +141,149 @@ func IndexRune(s string, r rune) int {
 	case !utf8.ValidRune(r):
 		return -1
 	default:
-		return Index(s, string(r))
+		// var n int
+		// var c0, c1, c2, c3 byte
+		// // Inlined version of utf8.EncodeRune
+		// {
+		// 	const (
+		// 		t1 = 0b00000000
+		// 		tx = 0b10000000
+		// 		t2 = 0b11000000
+		// 		t3 = 0b11100000
+		// 		t4 = 0b11110000
+		//
+		// 		maskx = 0b00111111
+		//
+		// 		rune1Max = 1<<7 - 1
+		// 		rune2Max = 1<<11 - 1
+		// 		rune3Max = 1<<16 - 1
+		// 	)
+		// 	switch i := uint32(r); {
+		// 	case i <= rune2Max:
+		// 		c0 = t2 | byte(r>>6)
+		// 		c1 = tx | byte(r)&maskx
+		// 		n = 2
+		// 	// NB: removed the invalid rune check since that is
+		// 	// performed above.
+		// 	case i <= rune3Max:
+		// 		c0 = t3 | byte(r>>12)
+		// 		c1 = tx | byte(r>>6)&maskx
+		// 		c2 = tx | byte(r)&maskx
+		// 		n = 3
+		// 	default:
+		// 		c0 = t4 | byte(r>>18)
+		// 		c1 = tx | byte(r>>12)&maskx
+		// 		c2 = tx | byte(r>>6)&maskx
+		// 		c3 = tx | byte(r)&maskx
+		// 		n = 4
+		// 	}
+		// }
+		// if n >= len(s) {
+		// 	if string(r) == s {
+		// 		return 0
+		// 	}
+		// 	return -1
+		// }
+		// NOTE: searching for the last byte was not always faster (so maybe
+		// not worth investigating in the future).
+		//
+		// Search for r using the second byte of its UTF-8 encoded form
+		// since it is more unique than the first byte. This 4-5x faster
+		// when all the text is Unicode.
+		x := string(r)
+		n := len(x)
+		if len(s) <= n {
+			if s == x {
+				// println("# s: '" + s + "' r: '" + x + "': 0")
+				return 0
+			}
+			// println("# s: '" + s + "' r: '" + x + "': -1")
+			return -1
+		}
+		switch n {
+		case 2:
+			fails := 0
+			i := 1
+			c0 := x[0]
+			c1 := x[1]
+			t := len(s)
+			for i < t {
+				if s[i] != c1 {
+					o := IndexByte(s[i+1:t], c1)
+					if o < 0 {
+						return -1
+					}
+					i += o + 1
+				}
+				if s[i-1] == c0 {
+					return i - 1
+				}
+				fails++
+				i++
+				if fails > bytealg.Cutover(i) {
+					if j := Index(s[i:], string(r)); j != -1 {
+						return i + j
+					}
+					return -1
+				}
+			}
+		case 3:
+			c0 := x[0]
+			c1 := x[1]
+			c2 := x[2]
+			fails := 0
+			i := 1
+			t := len(s) - 1
+			for i < t {
+				if s[i] != c1 {
+					o := IndexByte(s[i+1:t], c1)
+					if o < 0 {
+						return -1
+					}
+					i += o + 1
+				}
+				if s[i-1] == c0 && s[i+1] == c2 {
+					return i - 1
+				}
+				fails++
+				i++
+				if fails > bytealg.Cutover(i) {
+					if j := Index(s[i:], string(r)); j != -1 {
+						return i + j
+					}
+					return -1
+				}
+			}
+		case 4:
+			c0 := x[0]
+			c1 := x[1]
+			c2 := x[2]
+			c3 := x[3]
+			fails := 0
+			i := 1
+			t := len(s) - 2
+			for i < t {
+				if s[i] != c1 {
+					o := IndexByte(s[i+1:t], c1)
+					if o < 0 {
+						return -1
+					}
+					i += o + 1
+				}
+				if s[i-1] == c0 && s[i+1] == c2 && s[i+2] == c3 {
+					return i - 1
+				}
+				fails++
+				i++
+				if fails > bytealg.Cutover(i) {
+					if j := Index(s[i:], string(r)); j != -1 {
+						return i + j
+					}
+					return -1
+				}
+			}
+		}
+		return -1
 	}
 }
 
