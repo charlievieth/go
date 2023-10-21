@@ -123,9 +123,6 @@ func IndexByte(s string, c byte) int {
 // If r is utf8.RuneError, it returns the first instance of any
 // invalid UTF-8 byte sequence.
 func IndexRune(s string, r rune) int {
-	// TODO: consider searching for the first byte if it is not one of:
-	// 240, 243, or 244 (which are the first byte of ~78% of multi-byte
-	// Unicode characters).
 	switch {
 	case 0 <= r && r < utf8.RuneSelf:
 		return IndexByte(s, byte(r))
@@ -142,7 +139,7 @@ func IndexRune(s string, r rune) int {
 		var n int
 		var c0, c1, c2, c3 byte
 		// Inlined version of utf8.EncodeRune without an invalid rune check
-		// since that is handled above.
+		// since that is handled above. This is faster than using string(r).
 		const (
 			t1       = 0b00000000
 			tx       = 0b10000000
@@ -177,14 +174,9 @@ func IndexRune(s string, r rune) int {
 			}
 			return -1
 		}
-		// Search for rune r using the second byte of its UTF-8 encoded form
-		// since the second byte is more unique than the first byte.
-		//
-		// The ~78% of multibyte runes start with: [240, 243, 244].
-		//
-		// Search for r using the second byte of its UTF-8 encoded form since
-		// it is more unique than the first byte. This significantly faster
-		// when all the text is Unicode.
+		// Search for rune r using the second byte of its UTF-8 encoded form.
+		// The distribution of the second byte is more uniform compared to the
+		// first byte which has a ~78% chance of being [240, 243, 244].
 		switch n {
 		case 2:
 			fails := 0
