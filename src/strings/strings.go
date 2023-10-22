@@ -136,10 +136,15 @@ func IndexRune(s string, r rune) int {
 	case !utf8.ValidRune(r):
 		return -1
 	default:
+		// Search for rune r using the second byte of its UTF-8 encoded form.
+		// The distribution of the second byte is more uniform compared to the
+		// first byte which has a ~78% chance of being [240, 243, 244].
+
+		// Inlined version of utf8.EncodeRune. We elide the check for invalid
+		// and 1 byte runes since that is handled above. This is about 2x
+		// faster than using string(r) / runtime.intstring.
 		var n int
 		var c0, c1, c2, c3 byte
-		// Inlined version of utf8.EncodeRune without an invalid rune check
-		// since that is handled above. This is faster than using string(r).
 		const (
 			t1       = 0b00000000
 			tx       = 0b10000000
@@ -190,9 +195,7 @@ func IndexRune(s string, r rune) int {
 			return -1
 		}
 
-		// Search for rune r using the second byte of its UTF-8 encoded form.
-		// The distribution of the second byte is more uniform compared to the
-		// first byte which has a ~78% chance of being [240, 243, 244].
+		// Search for the second byte.
 		switch n {
 		case 2:
 			fails := 0
