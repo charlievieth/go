@@ -7,6 +7,7 @@ package strings_test
 import (
 	"bytes"
 	"fmt"
+	"internal/bytealg"
 	"io"
 	"math"
 	"math/rand"
@@ -278,7 +279,8 @@ func TestIndexRandom(t *testing.T) {
 }
 
 func TestIndexRune(t *testing.T) {
-	space128 := Repeat(" ", 128)
+	// Make sure we don't fallback to bytealg.IndexString for these tests.
+	space := Repeat(" ", (bytealg.MaxLen+bytealg.MaxBruteForce)*2)
 	tests := []struct {
 		in   string
 		rune rune
@@ -309,22 +311,28 @@ func TestIndexRune(t *testing.T) {
 		{"a☺b☻c☹d\xe2\x98�\xff�\xed\xa0\x80", utf8.MaxRune + 1, -1},
 
 		// 2 bytes
-		{space128 + "ß  ", 'ß', 128},
-		{space128 + "a  ", 'ß', -1},
-		{Repeat("ğ", 64) + "ß", 'ß', 128}, // test cutover
+		{"ß", 'ß', 0},
+		{"a", 'ß', -1},
+		{space + "ß  ", 'ß', len(space)},
+		{space + "a  ", 'ß', -1},
+		{Repeat("ğ", 16) + "ß", 'ß', 32}, // test cutover
 		{Repeat("ğ", 16), 'ß', -1},
 
 		// 3 bytes
-		{space128 + "世  ", '世', 128},
-		{space128 + "a  ", '世', -1},
-		{Repeat("丗", 48) + "世", '世', 144}, // test cutover
-		{Repeat("丗", 48), '世', -1},
+		{"世", '世', 0},
+		{"a", '世', -1},
+		{space + "世  ", '世', len(space)},
+		{space + "a  ", '世', -1},
+		{Repeat("丗", 16) + "世", '世', 48}, // test cutoverQ
+		{Repeat("丗", 16), '世', -1},
 
 		// 4 bytes
-		{space128 + "𐀀  ", '𐀀', 128},
-		{space128 + "a  ", '𐀀', -1},
-		{Repeat("𐀁", 32) + "𐀀", '𐀀', 128}, // test cutover
-		{Repeat("𐀁", 32), '𐀀', -1},
+		{"𐀀", '𐀀', 0},
+		{"a", '𐀀', -1},
+		{space + "𐀀  ", '𐀀', len(space)},
+		{space + "a  ", '𐀀', -1},
+		{Repeat("𐀁", 8) + "𐀀", '𐀀', 32}, // test cutover
+		{Repeat("𐀁", 8), '𐀀', -1},
 	}
 	for _, tt := range tests {
 		if got := IndexRune(tt.in, tt.rune); got != tt.want {
@@ -374,24 +382,17 @@ func BenchmarkIndexRuneUnicode(b *testing.B) {
 }
 
 func BenchmarkIndexRuneCutover(b *testing.B) {
-	b.Run("Easy", func(b *testing.B) {
-		str := Repeat("丗", 48) + "世"
-		if got := IndexRune(str, '世'); got != 144 {
-			b.Fatalf("wrong index: expected 14, got=%d", got)
-		}
-		for i := 0; i < b.N; i++ {
-			IndexRune(str, '世')
-		}
-	})
-	b.Run("Hard", func(b *testing.B) {
-		str := Repeat("丝", 48) + "丞"
-		if got := IndexRune(str, '丞'); got != 144 {
-			b.Fatalf("wrong index: expected 14, got=%d", got)
-		}
-		for i := 0; i < b.N; i++ {
-			IndexRune(str, '丞')
-		}
-	})
+	// First and second bytes match. This will trigger the cutover.
+	if "丝"[:2] != "丞"[:2] {
+		b.Fatal("WAT")
+	}
+	str := Repeat("丝", 48) + "丞"
+	if got := IndexRune(str, '丞'); got != 144 {
+		b.Fatalf("wrong index: expected 14, got=%d", got)
+	}
+	for i := 0; i < b.N; i++ {
+		IndexRune(str, '丞')
+	}
 }
 
 func BenchmarkIndexRuneOneCodePoint(b *testing.B) {
