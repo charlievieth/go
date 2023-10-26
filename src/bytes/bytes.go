@@ -168,9 +168,88 @@ func IndexRune(s []byte, r rune) int {
 	case !utf8.ValidRune(r):
 		return -1
 	default:
+		// Search for rune r using the last byte of its UTF-8 encoded form.
+		// The distribution of the last byte is more uniform compared to the
+		// first byte which has a ~78% chance of being [240, 243, 244].
 		var b [utf8.UTFMax]byte
 		n := utf8.EncodeRune(b[:], r)
-		return Index(s, b[:n])
+
+		// NB:
+		// 	* Starting with IndexByte is faster for Latin, but slower for Cyrillic
+		// 	* Using brute-force when s is small is slower
+
+		switch n {
+		case 2:
+			fails := 0
+			for i := 1; i < len(s); {
+				if s[i] != b[1] {
+					o := IndexByte(s[i+1:], b[1])
+					if o < 0 {
+						return -1
+					}
+					i += o + 1
+				}
+				if s[i-1] == b[0] {
+					return i - 1
+				}
+				fails++
+				i++
+				if fails > bytealg.Cutover(i) {
+					r := bytealg.Index(s[i:], b[:n])
+					if r >= 0 {
+						return r + i
+					}
+					return -1
+				}
+			}
+		case 3:
+			fails := 0
+			for i := 2; i < len(s); {
+				if s[i] != b[2] {
+					o := IndexByte(s[i+1:], b[2])
+					if o < 0 {
+						return -1
+					}
+					i += o + 1
+				}
+				if s[i-2] == b[0] && s[i-1] == b[1] {
+					return i - 2
+				}
+				fails++
+				i++
+				if fails > bytealg.Cutover(i) {
+					r := bytealg.Index(s[i:], b[:n])
+					if r >= 0 {
+						return r + i
+					}
+					return -1
+				}
+			}
+		case 4:
+			fails := 0
+			for i := 3; i < len(s); {
+				if s[i] != b[3] {
+					o := IndexByte(s[i+1:], b[3])
+					if o < 0 {
+						return -1
+					}
+					i += o + 1
+				}
+				if s[i-3] == b[0] && s[i-2] == b[1] && s[i-1] == b[2] {
+					return i - 3
+				}
+				fails++
+				i++
+				if fails > bytealg.Cutover(i) {
+					r := bytealg.Index(s[i:], b[:n])
+					if r >= 0 {
+						return r + i
+					}
+					return -1
+				}
+			}
+		}
+		return -1 // this should never happen
 	}
 }
 
@@ -1272,6 +1351,15 @@ func Index(s, sep []byte) int {
 		// Use brute force when s and sep both are small
 		if len(s) <= bytealg.MaxBruteForce {
 			return bytealg.Index(s, sep)
+		}
+		// TODO: do we want this for Index since we may be dealing with raw bytes here?
+		// I guess the rune being valid is a hint that we might be dealing with text.
+		//
+		// Use optimized IndexRune when sep is a single non-ASCII rune
+		if n <= 4 && sep[0] >= utf8.RuneSelf {
+			if r, sz := utf8.DecodeRune(sep); sz == n {
+				return IndexRune(s, r)
+			}
 		}
 		c0 := sep[0]
 		c1 := sep[1]
