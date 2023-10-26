@@ -425,6 +425,31 @@ func TestIndexRune(t *testing.T) {
 		{"some_text=some_value", '=', 9},
 		{"☺a", 'a', 3},
 		{"a☻☺b", '☺', 4},
+		{"𠀳𠀗𠀾𠁄𠀧𠁆𠁂𠀫𠀖𠀪𠀲𠀴𠁀𠀨𠀿", '𠀿', 56},
+
+		// 2 bytes
+		{"ӆ", 'ӆ', 0},
+		{"a", 'ӆ', -1},
+		{"  ӆ  ", 'ӆ', 2},
+		{"  a  ", 'ӆ', -1},
+		{strings.Repeat("ц", 64) + "ӆ", 'ӆ', 128}, // test cutover
+		{strings.Repeat("ц", 64), 'ӆ', -1},
+
+		// 3 bytes
+		{"Ꚁ", 'Ꚁ', 0},
+		{"a", 'Ꚁ', -1},
+		{"  Ꚁ  ", 'Ꚁ', 2},
+		{"  a  ", 'Ꚁ', -1},
+		{strings.Repeat("Ꙁ", 64) + "Ꚁ", 'Ꚁ', 192}, // test cutoverQ
+		{strings.Repeat("Ꙁ", 64), 'Ꚁ', -1},
+
+		// 4 bytes
+		{"𡌀", '𡌀', 0},
+		{"a", '𡌀', -1},
+		{"  𡌀  ", '𡌀', 2},
+		{"  a  ", '𡌀', -1},
+		{strings.Repeat("𡋀", 64) + "𡌀", '𡌀', 256}, // test cutover
+		{strings.Repeat("𡋀", 64), '𡌀', -1},
 
 		// RuneError should match any invalid UTF-8 byte sequence.
 		{"�", '�', 0},
@@ -585,6 +610,21 @@ func BenchmarkIndexRuneASCII(b *testing.B) {
 	benchBytes(b, indexSizes, bmIndexRuneASCII(IndexRune))
 }
 
+func BenchmarkIndexRuneUnicode(b *testing.B) {
+	b.Run("Latin", func(b *testing.B) {
+		// Latin is mostly 1, 2, 3 byte runes.
+		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Latin, 'é', IndexRune))
+	})
+	b.Run("Cyrillic", func(b *testing.B) {
+		// Cyrillic is mostly 2 and 3 byte runes.
+		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Cyrillic, 'Ꙁ', IndexRune))
+	})
+	b.Run("Han", func(b *testing.B) {
+		// Han consists only of 3 and 4 byte runes.
+		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Han, '𠀿', IndexRune))
+	})
+}
+
 func bmIndexRuneASCII(index func([]byte, rune) int) func(b *testing.B, n int) {
 	return func(b *testing.B, n int) {
 		buf := bmbuf[0:n]
@@ -612,6 +652,68 @@ func bmIndexRune(index func([]byte, rune) int) func(b *testing.B, n int) {
 		buf[n-3] = '\x00'
 		buf[n-2] = '\x00'
 		buf[n-1] = '\x00'
+	}
+}
+
+func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
+	var rs []rune
+	for _, r16 := range rt.R16 {
+		for r := rune(r16.Lo); r <= rune(r16.Hi); r += rune(r16.Stride) {
+			if r != needle {
+				rs = append(rs, rune(r))
+			}
+		}
+	}
+	for _, r32 := range rt.R32 {
+		for r := rune(r32.Lo); r <= rune(r32.Hi); r += rune(r32.Stride) {
+			if r != needle {
+				rs = append(rs, rune(r))
+			}
+		}
+	}
+
+	// Shuffle the runes so that they are not in descending order.
+	// The sort is deterministic since this is used for benchmarks,
+	// which need to be repeatable.
+	rr := rand.New(rand.NewSource(1))
+	rr.Shuffle(len(rs), func(i, j int) {
+		rs[i], rs[j] = rs[j], rs[i]
+	})
+
+	return string(rs)
+}
+
+func bmIndexRuneUnicode(table *unicode.RangeTable, needle rune,
+	index func([]byte, rune) int) func(b *testing.B, n int) {
+
+	uchars := createUnicodeBuffer(table, needle)
+	return func(b *testing.B, n int) {
+		buf := bmbuf[0:n]
+		o := copy(buf, uchars)
+		for o < len(buf) {
+			o += copy(buf[o:], uchars)
+		}
+
+		// Make space for the needle rune at the end of buf.
+		m := utf8.RuneLen(needle)
+		for o := m; o > 0; {
+			_, sz := utf8.DecodeRune(buf)
+			copy(buf[len(buf)-sz:], "\x00\x00\x00\x00")
+			buf = buf[:len(buf)-sz]
+			o -= sz
+		}
+		buf = utf8.AppendRune(buf[:n-m], needle)
+
+		n -= m // adjust for rune len
+		for i := 0; i < b.N; i++ {
+			j := index(buf, needle)
+			if j != n {
+				b.Fatal("bad index", j)
+			}
+		}
+		for i := range buf {
+			buf[i] = '\x00'
+		}
 	}
 }
 
@@ -2024,6 +2126,11 @@ func makeBenchInputHard() []byte {
 var benchInputHard = makeBenchInputHard()
 
 func benchmarkIndexHard(b *testing.B, sep []byte) {
+	n := Index(benchInputHard, sep)
+	if n < 0 {
+		n = len(benchInputHard)
+	}
+	b.SetBytes(int64(n))
 	for i := 0; i < b.N; i++ {
 		Index(benchInputHard, sep)
 	}
@@ -2232,7 +2339,7 @@ func BenchmarkIndexPeriodic(b *testing.B) {
 func TestClone(t *testing.T) {
 	var cloneTests = [][]byte{
 		[]byte(nil),
-		[]byte{},
+		{},
 		Clone([]byte{}),
 		[]byte(strings.Repeat("a", 42))[:0],
 		[]byte(strings.Repeat("a", 42))[:0:0],

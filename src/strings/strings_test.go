@@ -135,6 +135,9 @@ var indexTests = []IndexTest{
 	// test fallback to Rabin-Karp.
 	{"oxoxoxoxoxoxoxoxoxoxoxoy", "oy", 22},
 	{"oxoxoxoxoxoxoxoxoxoxoxox", "oy", -1},
+	// invalid UTF-8 byte sequence (must be longer than bytealg.MaxBruteForce to
+	// test that we don't use IndexRune)
+	{"xx0123456789012345678901234567890123456789012345678901234567890120123456789012345678901234567890123456xxx\xed\x9f\xc0", "\xed\x9f\xc0", 105},
 }
 
 var lastIndexTests = []IndexTest{
@@ -306,6 +309,30 @@ func TestIndexRune(t *testing.T) {
 		{"a☺b☻c☹d\xe2\x98�\xff�\xed\xa0\x80", -1, -1},
 		{"a☺b☻c☹d\xe2\x98�\xff�\xed\xa0\x80", 0xD800, -1}, // Surrogate pair
 		{"a☺b☻c☹d\xe2\x98�\xff�\xed\xa0\x80", utf8.MaxRune + 1, -1},
+
+		// 2 bytes
+		{"ӆ", 'ӆ', 0},
+		{"a", 'ӆ', -1},
+		{"  ӆ  ", 'ӆ', 2},
+		{"  a  ", 'ӆ', -1},
+		{Repeat("ц", 64) + "ӆ", 'ӆ', 128}, // test cutover
+		{Repeat("ц", 64), 'ӆ', -1},
+
+		// 3 bytes
+		{"Ꚁ", 'Ꚁ', 0},
+		{"a", 'Ꚁ', -1},
+		{"  Ꚁ  ", 'Ꚁ', 2},
+		{"  a  ", 'Ꚁ', -1},
+		{Repeat("Ꙁ", 64) + "Ꚁ", 'Ꚁ', 192}, // test cutover
+		{Repeat("Ꙁ", 64), 'Ꚁ', -1},
+
+		// 4 bytes
+		{"𡌀", '𡌀', 0},
+		{"a", '𡌀', -1},
+		{"  𡌀  ", '𡌀', 2},
+		{"  a  ", '𡌀', -1},
+		{Repeat("𡋀", 64) + "𡌀", '𡌀', 256}, // test cutover
+		{Repeat("𡋀", 64), '𡌀', -1},
 	}
 	for _, tt := range tests {
 		if got := IndexRune(tt.in, tt.rune); got != tt.want {
@@ -313,13 +340,14 @@ func TestIndexRune(t *testing.T) {
 		}
 	}
 
-	haystack := "test世界"
+	// Make sure we trigger the cutover and string(rune) conversion.
+	haystack := "test" + Repeat("𡋀", 32) + "𡌀"
 	allocs := testing.AllocsPerRun(1000, func() {
 		if i := IndexRune(haystack, 's'); i != 2 {
 			t.Fatalf("'s' at %d; want 2", i)
 		}
-		if i := IndexRune(haystack, '世'); i != 4 {
-			t.Fatalf("'世' at %d; want 4", i)
+		if i := IndexRune(haystack, '𡌀'); i != 132 {
+			t.Fatalf("'𡌀' at %d; want 4", i)
 		}
 	})
 	if allocs != 0 && testing.CoverMode() == "" {
@@ -336,6 +364,46 @@ func BenchmarkIndexRune(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		IndexRune(benchmarkString, '☺')
 	}
+}
+
+func BenchmarkIndexRuneShort(b *testing.B) {
+	if got := IndexRune(benchmarkString, '☺'); got != 14 {
+		b.Fatalf("wrong index: expected 14, got=%d", got)
+	}
+	for i := 0; i < b.N; i++ {
+		IndexRune(benchmarkString, '☺')
+	}
+}
+
+func BenchmarkIndexRuneUnicode(b *testing.B) {
+	const str = benchmarkString + "αβδ"
+	for i := 0; i < b.N; i++ {
+		IndexRune(str, 'β')
+	}
+}
+
+func BenchmarkIndexRuneCutover(b *testing.B) {
+	// First and second bytes match. This will trigger the cutover.
+	str := Repeat("丝", 48) + "丞"
+	if got := IndexRune(str, '丞'); got != 144 {
+		b.Fatalf("wrong index: expected 14, got=%d", got)
+	}
+	for i := 0; i < b.N; i++ {
+		IndexRune(str, '丞')
+	}
+}
+
+func BenchmarkIndexRuneOneCodePoint(b *testing.B) {
+	b.Run("Match", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			IndexRune("β", 'β')
+		}
+	})
+	b.Run("NoMatch", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			IndexRune("a", 'β')
+		}
+	})
 }
 
 var benchmarkLongString = Repeat(" ", 100) + benchmarkString
