@@ -177,6 +177,11 @@ var indexTests = []BinOpTest{
 	{"oxoxoxoxoxoxoxoxoxoxoxox", "oy", -1},
 	// test fallback to Rabin-Karp.
 	{"000000000000000000000000000000000000000000000000000000000000000000000001", "0000000000000000000000000000000000000000000000000000000000000000001", 5},
+	// test fallback to IndexRune
+	{"oxoxoxoxoxoxoxoxoxoxox☺", "☺", 22},
+	// invalid UTF-8 byte sequence (must be longer than bytealg.MaxBruteForce to
+	// test that we don't use IndexRune)
+	{"xx0123456789012345678901234567890123456789012345678901234567890120123456789012345678901234567890123456xxx\xed\x9f\xc0", "\xed\x9f\xc0", 105},
 }
 
 var lastIndexTests = []BinOpTest{
@@ -430,24 +435,24 @@ func TestIndexRune(t *testing.T) {
 		// 2 bytes
 		{"ӆ", 'ӆ', 0},
 		{"a", 'ӆ', -1},
-		{"  ӆ  ", 'ӆ', 2},
-		{"  a  ", 'ӆ', -1},
+		{"  ӆ", 'ӆ', 2},
+		{"  a", 'ӆ', -1},
 		{strings.Repeat("ц", 64) + "ӆ", 'ӆ', 128}, // test cutover
 		{strings.Repeat("ц", 64), 'ӆ', -1},
 
 		// 3 bytes
 		{"Ꚁ", 'Ꚁ', 0},
 		{"a", 'Ꚁ', -1},
-		{"  Ꚁ  ", 'Ꚁ', 2},
-		{"  a  ", 'Ꚁ', -1},
+		{"  Ꚁ", 'Ꚁ', 2},
+		{"  a", 'Ꚁ', -1},
 		{strings.Repeat("Ꙁ", 64) + "Ꚁ", 'Ꚁ', 192}, // test cutoverQ
 		{strings.Repeat("Ꙁ", 64), 'Ꚁ', -1},
 
 		// 4 bytes
 		{"𡌀", '𡌀', 0},
 		{"a", '𡌀', -1},
-		{"  𡌀  ", '𡌀', 2},
-		{"  a  ", '𡌀', -1},
+		{"  𡌀", '𡌀', 2},
+		{"  a", '𡌀', -1},
 		{strings.Repeat("𡋀", 64) + "𡌀", '𡌀', 256}, // test cutover
 		{strings.Repeat("𡋀", 64), '𡌀', -1},
 
@@ -655,7 +660,9 @@ func bmIndexRune(index func([]byte, rune) int) func(b *testing.B, n int) {
 	}
 }
 
-func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
+func bmIndexRuneUnicode(rt *unicode.RangeTable, needle rune,
+	index func([]byte, rune) int) func(b *testing.B, n int) {
+
 	var rs []rune
 	for _, r16 := range rt.R16 {
 		for r := rune(r16.Lo); r <= rune(r16.Hi); r += rune(r16.Stride) {
@@ -671,7 +678,6 @@ func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
 			}
 		}
 	}
-
 	// Shuffle the runes so that they are not in descending order.
 	// The sort is deterministic since this is used for benchmarks,
 	// which need to be repeatable.
@@ -679,14 +685,8 @@ func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
 	rr.Shuffle(len(rs), func(i, j int) {
 		rs[i], rs[j] = rs[j], rs[i]
 	})
+	uchars := string(rs)
 
-	return string(rs)
-}
-
-func bmIndexRuneUnicode(table *unicode.RangeTable, needle rune,
-	index func([]byte, rune) int) func(b *testing.B, n int) {
-
-	uchars := createUnicodeBuffer(table, needle)
 	return func(b *testing.B, n int) {
 		buf := bmbuf[0:n]
 		o := copy(buf, uchars)
