@@ -660,15 +660,10 @@ func bmIndexRune(index func([]byte, rune) int) func(b *testing.B, n int) {
 	}
 }
 
-func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
-	n := 0
-	for _, r16 := range rt.R16 {
-		n += int((r16.Hi-r16.Lo)/r16.Stride) + 1
-	}
-	for _, r32 := range rt.R32 {
-		n += int((r32.Hi-r32.Lo)/r32.Stride) + 1
-	}
-	rs := make([]rune, 0, n)
+func bmIndexRuneUnicode(rt *unicode.RangeTable, needle rune,
+	index func([]byte, rune) int) func(b *testing.B, n int) {
+
+	var rs []rune
 	for _, r16 := range rt.R16 {
 		for r := rune(r16.Lo); r <= rune(r16.Hi); r += rune(r16.Stride) {
 			if r != needle {
@@ -683,7 +678,6 @@ func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
 			}
 		}
 	}
-
 	// Shuffle the runes so that they are not in descending order.
 	// The sort is deterministic since this is used for benchmarks,
 	// which need to be repeatable.
@@ -691,14 +685,8 @@ func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
 	rr.Shuffle(len(rs), func(i, j int) {
 		rs[i], rs[j] = rs[j], rs[i]
 	})
+	uchars := string(rs)
 
-	return string(rs)
-}
-
-func bmIndexRuneUnicode(table *unicode.RangeTable, needle rune,
-	index func([]byte, rune) int) func(b *testing.B, n int) {
-
-	uchars := createUnicodeBuffer(table, needle)
 	return func(b *testing.B, n int) {
 		buf := bmbuf[0:n]
 		o := copy(buf, uchars)
