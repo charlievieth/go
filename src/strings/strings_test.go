@@ -135,6 +135,8 @@ var indexTests = []IndexTest{
 	// test fallback to Rabin-Karp.
 	{"oxoxoxoxoxoxoxoxoxoxoxoy", "oy", 22},
 	{"oxoxoxoxoxoxoxoxoxoxoxox", "oy", -1},
+	// test fallback to IndexRune
+	{"oxoxoxoxoxoxoxoxoxoxox☺", "☺", 22},
 	// invalid UTF-8 byte sequence (must be longer than bytealg.MaxBruteForce to
 	// test that we don't use IndexRune)
 	{"xx0123456789012345678901234567890123456789012345678901234567890120123456789012345678901234567890123456xxx\xed\x9f\xc0", "\xed\x9f\xc0", 105},
@@ -313,24 +315,24 @@ func TestIndexRune(t *testing.T) {
 		// 2 bytes
 		{"ӆ", 'ӆ', 0},
 		{"a", 'ӆ', -1},
-		{"  ӆ  ", 'ӆ', 2},
-		{"  a  ", 'ӆ', -1},
+		{"  ӆ", 'ӆ', 2},
+		{"  a", 'ӆ', -1},
 		{Repeat("ц", 64) + "ӆ", 'ӆ', 128}, // test cutover
 		{Repeat("ц", 64), 'ӆ', -1},
 
 		// 3 bytes
 		{"Ꚁ", 'Ꚁ', 0},
 		{"a", 'Ꚁ', -1},
-		{"  Ꚁ  ", 'Ꚁ', 2},
-		{"  a  ", 'Ꚁ', -1},
+		{"  Ꚁ", 'Ꚁ', 2},
+		{"  a", 'Ꚁ', -1},
 		{Repeat("Ꙁ", 64) + "Ꚁ", 'Ꚁ', 192}, // test cutover
 		{Repeat("Ꙁ", 64), 'Ꚁ', -1},
 
 		// 4 bytes
 		{"𡌀", '𡌀', 0},
 		{"a", '𡌀', -1},
-		{"  𡌀  ", '𡌀', 2},
-		{"  a  ", '𡌀', -1},
+		{"  𡌀", '𡌀', 2},
+		{"  a", '𡌀', -1},
 		{Repeat("𡋀", 64) + "𡌀", '𡌀', 256}, // test cutover
 		{Repeat("𡋀", 64), '𡌀', -1},
 	}

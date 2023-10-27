@@ -138,21 +138,19 @@ func IndexRune(s string, r rune) int {
 	default:
 		// Search for rune r using the last byte of its UTF-8 encoded form.
 		// The distribution of the last byte is more uniform compared to the
-		// first byte which has a ~78% chance of being [240, 243, 244].
+		// first byte which has a 78% chance of being [240, 243, 244].
 
 		// Inlined version of utf8.EncodeRune. We elide the check for invalid
-		// and 1 byte runes since that is handled above. This is about 2x
+		// and 1 byte runes since that is handled above. This is roughly 2x
 		// faster than using string(r) (runtime.intstring).
 		var n int
 		var c0, c1, c2, c3 byte
 		const (
-			t1       = 0b00000000
 			tx       = 0b10000000
 			t2       = 0b11000000
 			t3       = 0b11100000
 			t4       = 0b11110000
 			maskx    = 0b00111111
-			rune1Max = 1<<7 - 1
 			rune2Max = 1<<11 - 1
 			rune3Max = 1<<16 - 1
 		)
@@ -175,10 +173,11 @@ func IndexRune(s string, r rune) int {
 		}
 
 		// Search using the last byte of the UTF-8 encoded rune.
+		var i int
 		switch n {
 		case 2:
 			fails := 0
-			for i := 1; i < len(s); {
+			for i = 1; i < len(s); {
 				if s[i] != c1 {
 					o := IndexByte(s[i+1:], c1)
 					if o < 0 {
@@ -192,16 +191,12 @@ func IndexRune(s string, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					r := bytealg.IndexString(s[i:], string(r))
-					if r >= 0 {
-						return r + i
-					}
-					return -1
+					goto fallback
 				}
 			}
 		case 3:
 			fails := 0
-			for i := 2; i < len(s); {
+			for i = 2; i < len(s); {
 				if s[i] != c2 {
 					o := IndexByte(s[i+1:], c2)
 					if o < 0 {
@@ -215,16 +210,12 @@ func IndexRune(s string, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					r := bytealg.IndexString(s[i:], string(r))
-					if r >= 0 {
-						return r + i
-					}
-					return -1
+					goto fallback
 				}
 			}
 		case 4:
 			fails := 0
-			for i := 3; i < len(s); {
+			for i = 3; i < len(s); {
 				if s[i] != c3 {
 					o := IndexByte(s[i+1:], c3)
 					if o < 0 {
@@ -238,16 +229,20 @@ func IndexRune(s string, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					r := bytealg.IndexString(s[i:], string(r))
-					if r >= 0 {
-						return r + i
-					}
-					return -1
+					goto fallback
 				}
 			}
-
 		}
-		return -1 // this should never happen
+		return -1
+
+	fallback:
+		// Switch to bytealg.IndexString when IndexByte produces too many false
+		// positives.
+		r := bytealg.IndexString(s[i:], string(r))
+		if r >= 0 {
+			return r + i
+		}
+		return -1
 	}
 }
 
@@ -1317,7 +1312,7 @@ func Index(s, substr string) int {
 			return bytealg.IndexString(s, substr)
 		}
 		if n <= 4 && s[0] >= utf8.RuneSelf {
-			// Use optimized IndexRune if sep consists of a single and valid rune.
+			// Use optimized IndexRune if substr consists of a single valid rune.
 			if r, sz := utf8.DecodeRuneInString(substr); sz == n {
 				return IndexRune(s, r)
 			}
