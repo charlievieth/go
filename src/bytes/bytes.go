@@ -178,10 +178,11 @@ func IndexRune(s []byte, r rune) int {
 		// 	* Starting with IndexByte is faster for Latin, but slower for Cyrillic
 		// 	* Using brute-force when s is small is slower
 
+		var i int
 		switch n {
 		case 2:
 			fails := 0
-			for i := 1; i < len(s); {
+			for i = 1; i < len(s); {
 				if s[i] != b[1] {
 					o := IndexByte(s[i+1:], b[1])
 					if o < 0 {
@@ -195,16 +196,12 @@ func IndexRune(s []byte, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					r := bytealg.Index(s[i:], b[:n])
-					if r >= 0 {
-						return r + i
-					}
-					return -1
+					goto fallback
 				}
 			}
 		case 3:
 			fails := 0
-			for i := 2; i < len(s); {
+			for i = 2; i < len(s); {
 				if s[i] != b[2] {
 					o := IndexByte(s[i+1:], b[2])
 					if o < 0 {
@@ -218,16 +215,12 @@ func IndexRune(s []byte, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					r := bytealg.Index(s[i:], b[:n])
-					if r >= 0 {
-						return r + i
-					}
-					return -1
+					goto fallback
 				}
 			}
 		case 4:
 			fails := 0
-			for i := 3; i < len(s); {
+			for i = 3; i < len(s); {
 				if s[i] != b[3] {
 					o := IndexByte(s[i+1:], b[3])
 					if o < 0 {
@@ -241,15 +234,19 @@ func IndexRune(s []byte, r rune) int {
 				fails++
 				i++
 				if fails > bytealg.Cutover(i) {
-					r := bytealg.Index(s[i:], b[:n])
-					if r >= 0 {
-						return r + i
-					}
-					return -1
+					goto fallback
 				}
 			}
 		}
-		return -1 // this should never happen
+		return -1
+
+	fallback:
+		// Switch to bytealg.Index when IndexByte produces too many false positives.
+		r := bytealg.Index(s[i:], b[:n])
+		if r >= 0 {
+			return r + i
+		}
+		return -1
 	}
 }
 
