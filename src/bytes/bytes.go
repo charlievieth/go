@@ -170,7 +170,7 @@ func IndexRune(s []byte, r rune) int {
 	default:
 		// Search for rune r using the last byte of its UTF-8 encoded form.
 		// The distribution of the last byte is more uniform compared to the
-		// first byte which has a ~78% chance of being [240, 243, 244].
+		// first byte which has a 78% chance of being [240, 243, 244].
 		var b [utf8.UTFMax]byte
 		n := utf8.EncodeRune(b[:], r)
 
