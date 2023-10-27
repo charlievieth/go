@@ -1344,10 +1344,7 @@ func Index(s, sep []byte) int {
 		if len(s) <= bytealg.MaxBruteForce {
 			return bytealg.Index(s, sep)
 		}
-		// TODO: do we want this for Index since we may be dealing with raw bytes here?
-		// I guess the rune being valid is a hint that we might be dealing with text.
-		//
-		// Use optimized IndexRune when sep is a single non-ASCII rune
+		// Use optimized IndexRune if sep consists of a single valid rune.
 		if n <= 4 && sep[0] >= utf8.RuneSelf {
 			if r, sz := utf8.DecodeRune(sep); sz == n {
 				return IndexRune(s, r)
