@@ -173,11 +173,6 @@ func IndexRune(s []byte, r rune) int {
 		// first byte which has a 78% chance of being [240, 243, 244].
 		var b [utf8.UTFMax]byte
 		n := utf8.EncodeRune(b[:], r)
-
-		// NB:
-		// 	* Starting with IndexByte is faster for Latin, but slower for Cyrillic
-		// 	* Using brute-force when s is small is slower
-
 		var i int
 		switch n {
 		case 2:
