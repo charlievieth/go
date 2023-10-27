@@ -656,7 +656,14 @@ func bmIndexRune(index func([]byte, rune) int) func(b *testing.B, n int) {
 }
 
 func createUnicodeBuffer(rt *unicode.RangeTable, needle rune) string {
-	var rs []rune
+	n := 0
+	for _, r16 := range rt.R16 {
+		n += int((r16.Hi-r16.Lo)/r16.Stride) + 1
+	}
+	for _, r32 := range rt.R32 {
+		n += int((r32.Hi-r32.Lo)/r32.Stride) + 1
+	}
+	rs := make([]rune, 0, n)
 	for _, r16 := range rt.R16 {
 		for r := rune(r16.Lo); r <= rune(r16.Hi); r += rune(r16.Stride) {
 			if r != needle {
