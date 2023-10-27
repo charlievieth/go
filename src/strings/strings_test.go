@@ -368,46 +368,6 @@ func BenchmarkIndexRune(b *testing.B) {
 	}
 }
 
-func BenchmarkIndexRuneShort(b *testing.B) {
-	if got := IndexRune(benchmarkString, '☺'); got != 14 {
-		b.Fatalf("wrong index: expected 14, got=%d", got)
-	}
-	for i := 0; i < b.N; i++ {
-		IndexRune(benchmarkString, '☺')
-	}
-}
-
-func BenchmarkIndexRuneUnicode(b *testing.B) {
-	const str = benchmarkString + "αβδ"
-	for i := 0; i < b.N; i++ {
-		IndexRune(str, 'β')
-	}
-}
-
-func BenchmarkIndexRuneCutover(b *testing.B) {
-	// First and second bytes match. This will trigger the cutover.
-	str := Repeat("丝", 48) + "丞"
-	if got := IndexRune(str, '丞'); got != 144 {
-		b.Fatalf("wrong index: expected 14, got=%d", got)
-	}
-	for i := 0; i < b.N; i++ {
-		IndexRune(str, '丞')
-	}
-}
-
-func BenchmarkIndexRuneOneCodePoint(b *testing.B) {
-	b.Run("Match", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			IndexRune("β", 'β')
-		}
-	})
-	b.Run("NoMatch", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			IndexRune("a", 'β')
-		}
-	})
-}
-
 var benchmarkLongString = Repeat(" ", 100) + benchmarkString
 
 func BenchmarkIndexRuneLongString(b *testing.B) {
