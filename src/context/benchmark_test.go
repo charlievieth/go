@@ -125,9 +125,14 @@ func BenchmarkCheckCanceled(b *testing.B) {
 	ctx, cancel := WithCancel(Background())
 	cancel()
 	b.Run("Err", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			ctx.Err()
-		}
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				ctx.Err()
+			}
+		})
+		// for i := 0; i < b.N; i++ {
+		// 	ctx.Err()
+		// }
 	})
 	b.Run("Done", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
@@ -151,6 +156,27 @@ func BenchmarkContextCancelDone(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkWithCancelParentCanceled(b *testing.B) {
+	ctx, cancel := WithCancel(Background())
+	cancel()
+
+	for i := 0; i < b.N; i++ {
+		_, cancel := WithCancel(ctx)
+		cancel()
+	}
+}
+
+func BenchmarkWithDeadlineParentCanceled(b *testing.B) {
+	deadline := time.Now().Add(time.Hour)
+	ctx, cancel := WithDeadline(Background(), deadline)
+	cancel()
+
+	for i := 0; i < b.N; i++ {
+		_, cancel := WithDeadline(ctx, deadline)
+		cancel()
+	}
 }
 
 func BenchmarkDeepValueNewGoRoutine(b *testing.B) {

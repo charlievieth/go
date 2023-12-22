@@ -233,6 +233,9 @@ type CancelFunc func()
 // Canceling this context releases resources associated with it, so code should
 // call cancel as soon as the operations running in this Context complete.
 func WithCancel(parent Context) (ctx Context, cancel CancelFunc) {
+	if parent.Err() != nil {
+		return &cancelledCtx{parent}, func() {}
+	}
 	c := withCancel(parent)
 	return c, func() { c.cancel(true, Canceled, nil) }
 }
@@ -261,6 +264,9 @@ type CancelCauseFunc func(cause error)
 //	ctx.Err() // returns context.Canceled
 //	context.Cause(ctx) // returns myError
 func WithCancelCause(parent Context) (ctx Context, cancel CancelCauseFunc) {
+	if parent.Err() != nil {
+		return &cancelledCtx{parent}, func(_ error) {}
+	}
 	c := withCancel(parent)
 	return c, func(cause error) { c.cancel(true, Canceled, cause) }
 }
@@ -565,6 +571,13 @@ func (c *cancelCtx) cancel(removeFromParent bool, err, cause error) {
 	}
 }
 
+// A cancelledCtx is the child of a cancelled context.
+type cancelledCtx struct{ Context }
+
+func (c cancelledCtx) String() string {
+	return contextName(c.Context) + ".WithCancel"
+}
+
 // WithoutCancel returns a copy of parent that is not canceled when parent is canceled.
 // The returned context returns no Deadline or Err, and its Done channel is nil.
 // Calling [Cause] on the returned context returns nil.
@@ -619,7 +632,7 @@ func WithDeadlineCause(parent Context, d time.Time, cause error) (Context, Cance
 	if parent == nil {
 		panic("cannot create context from nil parent")
 	}
-	if cur, ok := parent.Deadline(); ok && cur.Before(d) {
+	if cur, ok := parent.Deadline(); ok && cur.Before(d) || parent.Err() != nil {
 		// The current deadline is already sooner than the new one.
 		return WithCancel(parent)
 	}
