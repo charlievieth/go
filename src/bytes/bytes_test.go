@@ -618,15 +618,45 @@ func BenchmarkIndexRuneASCII(b *testing.B) {
 func BenchmarkIndexRuneUnicode(b *testing.B) {
 	b.Run("Latin", func(b *testing.B) {
 		// Latin is mostly 1, 2, 3 byte runes.
-		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Latin, 'é', IndexRune))
+		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Latin, 'é'))
 	})
 	b.Run("Cyrillic", func(b *testing.B) {
 		// Cyrillic is mostly 2 and 3 byte runes.
-		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Cyrillic, 'Ꙁ', IndexRune))
+		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Cyrillic, 'Ꙁ'))
 	})
 	b.Run("Han", func(b *testing.B) {
 		// Han consists only of 3 and 4 byte runes.
-		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Han, '𠀿', IndexRune))
+		benchBytes(b, indexSizes, bmIndexRuneUnicode(unicode.Han, '𠀿'))
+	})
+}
+
+// WARN: this only tests the performance of the IndexRune fallback code and
+// gives zero signal about the choice of cutover.
+//
+// Benchmark the performance of the fallback search.
+func BenchmarkIndexRunePeriodic(b *testing.B) {
+	// Benchmark the IndexRune cutover. The needle shares the same last
+	// byte as every rune in the haystack (search string).
+
+	// TODO: don't do this - or at least find something cleaner
+	sizes := indexSizes
+	for sizes[0] < 32 {
+		sizes = sizes[1:]
+	}
+
+	// 2 bytes per-rune
+	b.Run("Latin", func(b *testing.B) {
+		const _s = "ĥĥĥĥĥĥĥĥĥĥĥĥĥĥĥĥ"
+		benchBytes(b, sizes, bmIndexRunePeriodic(_s, 'ť'))
+	})
+
+	// We omit a benchmark with 3 byte UTF-8 sequences since the 2 and 4 byte
+	// sequences are sufficiently informative.
+
+	// 4 chars per-rune
+	b.Run("Han", func(b *testing.B) {
+		const _s = "𠋥𠋥𠋥𠋥𠋥𠋥𠋥𠋥"
+		benchBytes(b, sizes, bmIndexRunePeriodic(_s, '𠍥'))
 	})
 }
 
@@ -660,9 +690,7 @@ func bmIndexRune(index func([]byte, rune) int) func(b *testing.B, n int) {
 	}
 }
 
-func bmIndexRuneUnicode(rt *unicode.RangeTable, needle rune,
-	index func([]byte, rune) int) func(b *testing.B, n int) {
-
+func bmIndexRuneUnicode(rt *unicode.RangeTable, needle rune) func(b *testing.B, n int) {
 	var rs []rune
 	for _, r16 := range rt.R16 {
 		for r := rune(r16.Lo); r <= rune(r16.Hi); r += rune(r16.Stride) {
@@ -697,7 +725,7 @@ func bmIndexRuneUnicode(rt *unicode.RangeTable, needle rune,
 		// Make space for the needle rune at the end of buf.
 		m := utf8.RuneLen(needle)
 		for o := m; o > 0; {
-			_, sz := utf8.DecodeRune(buf)
+			_, sz := utf8.DecodeLastRune(buf)
 			copy(buf[len(buf)-sz:], "\x00\x00\x00\x00")
 			buf = buf[:len(buf)-sz]
 			o -= sz
@@ -706,7 +734,7 @@ func bmIndexRuneUnicode(rt *unicode.RangeTable, needle rune,
 
 		n -= m // adjust for rune len
 		for i := 0; i < b.N; i++ {
-			j := index(buf, needle)
+			j := IndexRune(buf, needle)
 			if j != n {
 				b.Fatal("bad index", j)
 			}
@@ -715,6 +743,30 @@ func bmIndexRuneUnicode(rt *unicode.RangeTable, needle rune,
 			buf[i] = '\x00'
 		}
 	}
+}
+
+func bmIndexRunePeriodic(haystack string, needle rune) func(b *testing.B, n int) {
+	if len(haystack) != 32 {
+		panic(fmt.Sprintf("len(haystack) = %d; want: 32", len(haystack)))
+	}
+	buf := Repeat([]byte(haystack), indexSizes[len(indexSizes)-1]/len(haystack))
+	orig, sz := utf8.DecodeRuneInString(haystack)
+	return func(b *testing.B, n int) {
+		if n < len(haystack) {
+			b.Skipf("n < %d", len(haystack))
+			return
+		}
+		s := buf[:n]
+		copy(s[len(s)-sz:], string(needle)) // append needle to end of s
+		o := n - sz
+		for i := 0; i < b.N; i++ {
+			if j := IndexRune(s, needle); j != o {
+				b.Fatal("bad index: ", j)
+			}
+		}
+		copy(s[len(s)-sz:], string(orig)) // replace needle
+	}
+	return nil
 }
 
 func BenchmarkEqual(b *testing.B) {

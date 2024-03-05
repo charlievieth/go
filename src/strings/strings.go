@@ -174,6 +174,7 @@ func IndexRune(s string, r rune) int {
 		}
 
 		// Search using the last byte of the UTF-8 encoded rune.
+		t := len(s) - n + 1
 		var i int
 		switch n {
 		case 2:
@@ -191,7 +192,8 @@ func IndexRune(s string, r rune) int {
 				}
 				fails++
 				i++
-				if hasFastIndex && fails > bytealg.Cutover(i) {
+				if (hasFastIndex && fails > bytealg.Cutover(i)) ||
+					(!hasFastIndex && fails >= 4+i>>4 && i < t) {
 					goto fallback
 				}
 			}
@@ -210,7 +212,8 @@ func IndexRune(s string, r rune) int {
 				}
 				fails++
 				i++
-				if hasFastIndex && fails > bytealg.Cutover(i) {
+				if (hasFastIndex && fails > bytealg.Cutover(i)) ||
+					(!hasFastIndex && fails >= 4+i>>4 && i < t) {
 					goto fallback
 				}
 			}
@@ -229,7 +232,8 @@ func IndexRune(s string, r rune) int {
 				}
 				fails++
 				i++
-				if hasFastIndex && fails > bytealg.Cutover(i) {
+				if (hasFastIndex && fails > bytealg.Cutover(i)) ||
+					(!hasFastIndex && fails >= 4+i>>4 && i < t) {
 					goto fallback
 				}
 			}
@@ -237,16 +241,33 @@ func IndexRune(s string, r rune) int {
 		return -1
 
 	fallback:
-		// Switch to bytealg.IndexString when IndexByte produces too many false positives.
-		var j int
+		// See comment in ../bytes/bytes.go.
 		if hasFastIndex {
-			j = bytealg.IndexString(s[i:], string(r))
+			if j := bytealg.IndexString(s[i:], string(r)); j >= 0 {
+				return i + j
+			}
 		} else {
-			// bytealg.IndexString is not available for this GOARCH so fallback to Index.
-			j = Index(s[i:], string(r))
-		}
-		if j >= 0 {
-			return j + i
+			s := s[i:]
+			switch n {
+			case 2:
+				for j := 0; j < len(s)-1; j++ {
+					if s[j] == c0 && s[j+1] == c1 {
+						return i + j
+					}
+				}
+			case 3:
+				for j := 0; j < len(s)-2; j++ {
+					if s[j] == c0 && s[j+1] == c1 && s[j+2] == c2 {
+						return i + j
+					}
+				}
+			case 4:
+				for j := 0; j < len(s)-3; j++ {
+					if s[j] == c0 && s[j+1] == c1 && s[j+2] == c2 && s[j+3] == c3 {
+						return i + j
+					}
+				}
+			}
 		}
 		return -1
 	}
@@ -1317,7 +1338,7 @@ func Index(s, substr string) int {
 		if len(s) <= bytealg.MaxBruteForce {
 			return bytealg.IndexString(s, substr)
 		}
-		if n <= 4 && s[0] >= utf8.RuneSelf {
+		if n <= utf8.UTFMax && s[0] >= utf8.RuneSelf {
 			// Use optimized IndexRune if substr consists of a single valid rune.
 			if r, sz := utf8.DecodeRuneInString(substr); sz == n {
 				return IndexRune(s, r)
@@ -1353,6 +1374,12 @@ func Index(s, substr string) int {
 			}
 		}
 		return -1
+	}
+	if bytealg.MaxBruteForce == 0 && n <= utf8.UTFMax && substr[0] >= utf8.RuneSelf {
+		// Check if we can use IndexRune on arches that do not have bytealg.Index.
+		if r, sz := utf8.DecodeRuneInString(substr); sz == n {
+			return IndexRune(s, r)
+		}
 	}
 	c0 := substr[0]
 	c1 := substr[1]
