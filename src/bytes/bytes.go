@@ -1286,6 +1286,7 @@ func Index(s, sep []byte) int {
 		}
 		return -1
 	}
+	// TODO: this code should check if IndexByte is fast
 	c0 := sep[0]
 	c1 := sep[1]
 	i := 0
@@ -1305,6 +1306,8 @@ func Index(s, sep []byte) int {
 		i++
 		fails++
 		if fails >= 4+i>>4 && i < t {
+			// WARN: IndexPeriodic never uses this code on amd64/arm64!
+			//
 			// Give up on IndexByte, it isn't skipping ahead
 			// far enough to be better than Rabin-Karp.
 			// Experiments (using IndexPeriodic) suggest
@@ -1313,7 +1316,9 @@ func Index(s, sep []byte) int {
 			// we should cutover at even larger average skips,
 			// because Equal becomes that much more expensive.
 			// This code does not take that effect into account.
-			j := bytealg.IndexRabinKarp(s[i:], sep)
+
+			// j := bytealg.IndexRabinKarp(s[i:], sep)
+			j := bytealg.TwoWayLongNeedle(s[i:], sep)
 			if j < 0 {
 				return -1
 			}

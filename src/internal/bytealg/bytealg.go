@@ -111,6 +111,169 @@ func LastIndexRabinKarp[T string | []byte](s, sep T) int {
 	return -1
 }
 
+func criticalFactorization[T string | []byte](s T) (maxSuffix, period int) {
+	ms := -1 // max suffix
+	p := 1   // period
+	// uint here is required for BCE
+	for j, k := 0, 1; uint(j+k) < uint(len(s)); {
+		a := s[uint(j+k)]
+		b := s[ms+k]
+		if a < b {
+			j += k
+			k = 1
+			p = j - ms
+		} else if a == b {
+			if k != p {
+				k++
+			} else {
+				j += p
+				k = 1
+			}
+		} else {
+			ms = j
+			j++
+			k = 1
+			p = 1
+		}
+	}
+	p0 := p
+
+	msr := -1 // max suffix reverse
+	p = 1
+	// uint here is required for BCE
+	for j, k := 0, 1; uint(j+k) < uint(len(s)); {
+		a := s[uint(j+k)]
+		b := s[msr+k]
+		if a > b {
+			j += k
+			k = 1
+			p = j - msr
+		} else if a == b {
+			if k != p {
+				k++
+			} else {
+				j += p
+				k = 1
+			}
+		} else {
+			msr = j
+			j++
+			k = 1
+			p = 1
+		}
+	}
+	if msr < ms {
+		return ms + 1, p0
+	}
+	return msr + 1, p
+}
+
+func TwoWayLongNeedle[T string | []byte](s, substr T) int {
+	suffix, period := criticalFactorization(substr)
+
+	n := len(substr)
+	var shiftTable [1 << 8]int // 256
+	for i := 0; i < 1<<8; i++ {
+		shiftTable[i] = n
+	}
+	for i := 0; i < len(substr); i++ {
+		// WARN: reduce conversions
+		// shiftTable[substr[i]] = uint(len(substr)) - uint(i) - 1
+		shiftTable[substr[i]] = len(substr) - i - 1
+	}
+
+	if string(substr[:suffix]) == string(substr[period:period+suffix]) {
+		// Entire needle is periodic; a mismatch can only advance by the
+		// period, so use memory to avoid rescanning known occurrences
+		// of the period.
+
+		memory := 0
+		for j := 0; j <= len(s)-len(substr); {
+			shift := shiftTable[s[j+len(substr)-1]]
+			if 0 < shift {
+				if memory != 0 && shift < period {
+					shift = len(substr) - period
+				}
+				memory = 0
+				j += shift
+				continue
+			}
+
+			// Scan for matches in right half.  The last byte has
+			// already been matched, by virtue of the shift table.
+
+			// TODO: bench the difference here
+			i := max(suffix, memory)
+			for ; i < len(substr)-1 && substr[i] == s[i+j]; i++ {
+			}
+			// o := i + j // TODO: remove "o"
+			// for i < len(substr)-1 && substr[i] == s[o] {
+			// 	i++
+			// 	o++
+			// }
+
+			if len(substr)-1 <= i {
+				// Scan for matches in left half.
+				i = suffix - 1
+				// pneedle := needle[i:]
+				// phaystack := haystack[i+j:]
+				o := i + j
+				// WARN: make sure this is correct
+				for memory < i+1 && substr[i] == s[o] {
+					i--
+					o--
+				}
+				// if i+1 < memory+1 { // WARN: dependent on uint rollover !!!
+				if i < memory {
+					return j
+				}
+				// No match, so remember how many repetitions of period
+				// on the right half were scanned.
+				j += period
+				memory = len(substr) - period // WARN: conversion
+			} else {
+				j += i - suffix + 1
+				memory = 0
+			}
+		}
+	} else {
+		// The two halves of needle are distinct; no extra memory is
+		// required, and any mismatch results in a maximal shift.
+		period = max(suffix, len(substr)-suffix) + 1 // WARN: conversion
+
+		for j := 0; j <= len(s)-len(substr); {
+			// Check the last byte first; if it does not match, then
+			// shift to the next possible match location.
+			shift := shiftTable[s[j+len(substr)-1]]
+			if 0 < shift {
+				j += shift
+				continue
+			}
+
+			// Scan for matches in right half.  The last byte has
+			// already been matched, by virtue of the shift table.
+			//
+			// TODO: consider using a slice of s[j:]
+			i := suffix
+			for ; i < len(substr)-1 && substr[i] == s[i+j]; i++ {
+			}
+			if i >= len(substr)-1 {
+				// Scan for matches in left half.
+				i := suffix - 1
+				for ; i >= 0 && substr[i] == s[i+j]; i-- {
+				}
+				if i < 0 {
+					return j
+				}
+				j += period
+			} else {
+				j += i - suffix + 1
+			}
+		}
+	}
+	return -1
+}
+
 // MakeNoZero makes a slice of length n and capacity of at least n Bytes
 // without zeroing the bytes (including the bytes between len and cap).
 // It is the caller's responsibility to ensure uninitialized bytes

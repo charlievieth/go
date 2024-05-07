@@ -92,7 +92,8 @@ func Index(s, substr string) int {
 		fails++
 		if fails >= 4+i>>4 && i < t {
 			// See comment in ../bytes/bytes.go.
-			j := bytealg.IndexRabinKarp(s[i:], substr)
+			j := bytealg.TwoWayLongNeedle(s[i:], substr)
+			// j := bytealg.IndexRabinKarp(s[i:], substr)
 			if j < 0 {
 				return -1
 			}
