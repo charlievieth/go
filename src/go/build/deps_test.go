@@ -64,7 +64,6 @@ var depsRules = `
 	  math/bits,
 	  structs,
 	  unicode,
-	  unicode/utf8,
 	  unicode/utf16;
 
 	internal/goarch < internal/abi;
@@ -131,6 +130,8 @@ var depsRules = `
 
 	syscall !< io;
 	reflect !< sort;
+
+	internal/bytealg < unicode/utf8;
 
 	RUNTIME, unicode/utf8
 	< path;

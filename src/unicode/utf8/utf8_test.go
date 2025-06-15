@@ -558,6 +558,7 @@ var ascii100000 = strings.Repeat("0123456789", 10000)
 
 func BenchmarkValidTenASCIIChars(b *testing.B) {
 	s := []byte("0123456789")
+	b.SetBytes(int64(len(s)))
 	for i := 0; i < b.N; i++ {
 		Valid(s)
 	}
@@ -565,6 +566,7 @@ func BenchmarkValidTenASCIIChars(b *testing.B) {
 
 func BenchmarkValid100KASCIIChars(b *testing.B) {
 	s := []byte(ascii100000)
+	b.SetBytes(int64(len(s)))
 	for i := 0; i < b.N; i++ {
 		Valid(s)
 	}
@@ -572,12 +574,15 @@ func BenchmarkValid100KASCIIChars(b *testing.B) {
 
 func BenchmarkValidTenJapaneseChars(b *testing.B) {
 	s := []byte("日本語日本語日本語日")
+	b.SetBytes(int64(len(s)))
 	for i := 0; i < b.N; i++ {
 		Valid(s)
 	}
 }
+
 func BenchmarkValidLongMostlyASCII(b *testing.B) {
 	longMostlyASCII := []byte(longStringMostlyASCII)
+	b.SetBytes(int64(len(longMostlyASCII)))
 	for i := 0; i < b.N; i++ {
 		Valid(longMostlyASCII)
 	}
@@ -585,36 +590,42 @@ func BenchmarkValidLongMostlyASCII(b *testing.B) {
 
 func BenchmarkValidLongJapanese(b *testing.B) {
 	longJapanese := []byte(longStringJapanese)
+	b.SetBytes(int64(len(longJapanese)))
 	for i := 0; i < b.N; i++ {
 		Valid(longJapanese)
 	}
 }
 
 func BenchmarkValidStringTenASCIIChars(b *testing.B) {
+	b.SetBytes(int64(len("0123456789")))
 	for i := 0; i < b.N; i++ {
 		ValidString("0123456789")
 	}
 }
 
 func BenchmarkValidString100KASCIIChars(b *testing.B) {
+	b.SetBytes(int64(len(ascii100000)))
 	for i := 0; i < b.N; i++ {
 		ValidString(ascii100000)
 	}
 }
 
 func BenchmarkValidStringTenJapaneseChars(b *testing.B) {
+	b.SetBytes(int64(len("日本語日本語日本語日")))
 	for i := 0; i < b.N; i++ {
 		ValidString("日本語日本語日本語日")
 	}
 }
 
 func BenchmarkValidStringLongMostlyASCII(b *testing.B) {
+	b.SetBytes(int64(len(longStringMostlyASCII)))
 	for i := 0; i < b.N; i++ {
 		ValidString(longStringMostlyASCII)
 	}
 }
 
 func BenchmarkValidStringLongJapanese(b *testing.B) {
+	b.SetBytes(int64(len(longStringJapanese)))
 	for i := 0; i < b.N; i++ {
 		ValidString(longStringJapanese)
 	}

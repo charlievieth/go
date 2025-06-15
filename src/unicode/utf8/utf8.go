@@ -7,6 +7,8 @@
 // See https://en.wikipedia.org/wiki/UTF-8
 package utf8
 
+import "internal/bytealg"
+
 // The conditions RuneError==unicode.ReplacementChar and
 // MaxRune==unicode.MaxRune are verified in the tests.
 // Defining them locally avoids this package depending on package unicode.
@@ -437,28 +439,16 @@ func Valid(p []byte) bool {
 	// ValidString, which was 20% faster on long ASCII strings.
 	p = p[:len(p):len(p)]
 
-	// Fast path. Check for and skip 8 bytes of ASCII characters per iteration.
-	for len(p) >= 8 {
-		// Combining two 32 bit loads allows the same code to be used
-		// for 32 and 64 bit platforms.
-		// The compiler can generate a 32bit load for first32 and second32
-		// on many platforms. See test/codegen/memcombine.go.
-		first32 := uint32(p[0]) | uint32(p[1])<<8 | uint32(p[2])<<16 | uint32(p[3])<<24
-		second32 := uint32(p[4]) | uint32(p[5])<<8 | uint32(p[6])<<16 | uint32(p[7])<<24
-		if (first32|second32)&0x80808080 != 0 {
-			// Found a non ASCII byte (>= RuneSelf).
-			break
-		}
-		p = p[8:]
-	}
 	n := len(p)
 	for i := 0; i < n; {
-		pi := p[i]
-		if pi < RuneSelf {
-			i++
-			continue
+		if p[i] < RuneSelf {
+			j := bytealg.IndexNonASCII(p[i:])
+			if j < 0 {
+				return true
+			}
+			i += j
 		}
-		x := first[pi]
+		x := first[p[i]]
 		if x == xx {
 			return false // Illegal starter byte.
 		}
@@ -483,28 +473,16 @@ func Valid(p []byte) bool {
 
 // ValidString reports whether s consists entirely of valid UTF-8-encoded runes.
 func ValidString(s string) bool {
-	// Fast path. Check for and skip 8 bytes of ASCII characters per iteration.
-	for len(s) >= 8 {
-		// Combining two 32 bit loads allows the same code to be used
-		// for 32 and 64 bit platforms.
-		// The compiler can generate a 32bit load for first32 and second32
-		// on many platforms. See test/codegen/memcombine.go.
-		first32 := uint32(s[0]) | uint32(s[1])<<8 | uint32(s[2])<<16 | uint32(s[3])<<24
-		second32 := uint32(s[4]) | uint32(s[5])<<8 | uint32(s[6])<<16 | uint32(s[7])<<24
-		if (first32|second32)&0x80808080 != 0 {
-			// Found a non ASCII byte (>= RuneSelf).
-			break
-		}
-		s = s[8:]
-	}
 	n := len(s)
 	for i := 0; i < n; {
-		si := s[i]
-		if si < RuneSelf {
-			i++
-			continue
+		if s[i] < RuneSelf {
+			j := bytealg.IndexNonASCIIString(s[i:])
+			if j < 0 {
+				return true
+			}
+			i += j
 		}
-		x := first[si]
+		x := first[s[i]]
 		if x == xx {
 			return false // Illegal starter byte.
 		}
