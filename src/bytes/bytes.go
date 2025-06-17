@@ -1390,8 +1390,10 @@ func Index(s, sep []byte) int {
 			// because Equal becomes that much more expensive.
 			// This code does not take that effect into account.
 
-			// j := bytealg.IndexRabinKarp(s[i:], sep)
-			j := bytealg.TwoWayLongNeedle(s[i:], sep)
+			j := bytealg.IndexRabinKarp(s[i:], sep)
+			// j := bytealg.TwoWayLongNeedle(s[i:], sep)
+			// WARN: there is a bug in two-way-short-needle
+			// j := bytealg.TwoWaySeach(s[i:], sep)
 			if j < 0 {
 				return -1
 			}

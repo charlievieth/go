@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/rand"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
@@ -2291,6 +2292,125 @@ func BenchmarkIndexHard4(b *testing.B) {
 	benchmarkIndexHard(b, []byte("<pre><b>hello</b><strong>world</strong></pre>"))
 }
 
+func BenchmarkIndexLateMatch100Characters(b *testing.B) {
+	m := strings.Repeat("ABC", 33)
+	s1 := []byte(strings.Repeat(m+"D", 300) + m + "E")
+	s2 := []byte(m + "E")
+	b.ResetTimer()
+	b.SetBytes(int64(len(s1)))
+	for b.Loop() {
+		Index(s1, s2)
+	}
+}
+
+func BenchmarkIndexGLibc(b *testing.B) {
+	buf1 := make([]byte, 65536)
+	buf2 := make([]byte, 65536)
+
+	// WARN: INLINE
+	setBytes := func(b *testing.B, s, substr []byte, mustMatch bool) {
+		b.Helper()
+		if i := Index(s, substr); i < 0 {
+			if mustMatch {
+				b.Fatal("s does not contain substr")
+			}
+			b.SetBytes(int64(len(s)))
+		} else {
+			b.SetBytes(int64(i + len(substr)))
+		}
+	}
+	_ = setBytes
+
+	bench := func(b *testing.B, s, substr []byte, expected int) {
+		setBytes(b, s, substr, expected >= 0)
+		for b.Loop() {
+			Index(s, substr)
+		}
+	}
+
+	// Hard needle for strstr algorithm using skip table.  This results in many
+	// memcmp calls comparing most of the needle.
+	testHardNeedle1 := func(b *testing.B, nelen, hslen, expected int) {
+		ne := buf1[:nelen]
+		hs := buf2[:hslen]
+
+		for i := range ne {
+			ne[i] = 'a'
+		}
+		ne[len(ne)-14] = 'b'
+		for i := range hs {
+			hs[i] = 'a'
+		}
+		for i := len(ne); i <= len(hs); i += len(ne) {
+			hs[i-5] = 'b'
+			hs[i-62] = 'b'
+		}
+		bench(b, hs, ne, expected)
+	}
+
+	// 2nd hard needle for strstr algorithm using skip table.  This results in
+	// many memcmp calls comparing most of the needle.
+	testHardNeedle2 := func(b *testing.B, nelen, hslen, expected int) {
+		ne := buf1[:nelen]
+		hs := buf2[:hslen]
+
+		for i := range ne {
+			ne[i] = 'a'
+		}
+		ne[len(ne)-6] = 'b'
+		for i := range hs {
+			hs[i] = 'a'
+		}
+		for i := len(ne); i <= len(hs); i += len(ne) {
+			hs[i-5] = 'b'
+			hs[i-6] = 'b'
+		}
+		bench(b, hs, ne, expected)
+	}
+
+	// CEV: two-way performance gets absolutely killed in this benchmark
+	// and the reference C implementation doesn't do any better so we're
+	// truly slow here.
+	//
+	// Hard needle for Two-way algorithm - the random input causes a large number
+	// of branch mispredictions which significantly reduces performance on modern
+	// micro architectures.
+	testHardNeedle3 := func(b *testing.B, nelen, hslen, expected int) {
+		ne := buf1[:nelen]
+		hs := buf2[:hslen]
+
+		rr := rand.New(rand.NewSource(99))
+		for i := range hs {
+			if rr.Intn(255) > 155 {
+				hs[i] = 'a'
+			} else {
+				hs[i] = 'b'
+			}
+		}
+
+		for i := range ne {
+			ne[i] = 'a'
+		}
+		ne[len(ne)-2] = 'b'
+		ne[0] = 'b'
+		bench(b, hs, ne, expected)
+	}
+
+	doBench := func(b *testing.B, name string,
+		fn func(b *testing.B, nelen, hslen, expected int)) {
+		b.Run(name, func(b *testing.B) {
+			for _, sz := range []int{64, 256, 1024} {
+				b.Run(strconv.Itoa(sz), func(b *testing.B) {
+					fn(b, sz, 65536, -1)
+				})
+			}
+		})
+	}
+	doBench(b, "Hard1", testHardNeedle1)
+	doBench(b, "Hard2", testHardNeedle2)
+	doBench(b, "Hard3", testHardNeedle3)
+}
+
 func BenchmarkLastIndexHard1(b *testing.B) { benchmarkLastIndexHard(b, []byte("<>")) }
 func BenchmarkLastIndexHard2(b *testing.B) { benchmarkLastIndexHard(b, []byte("</pre>")) }
 func BenchmarkLastIndexHard3(b *testing.B) { benchmarkLastIndexHard(b, []byte("<b>hello world</b>")) }
@@ -2475,7 +2595,7 @@ func BenchmarkIndexPeriodic(b *testing.B) {
 func TestClone(t *testing.T) {
 	var cloneTests = [][]byte{
 		[]byte(nil),
-		[]byte{},
+		{},
 		Clone([]byte{}),
 		[]byte(strings.Repeat("a", 42))[:0],
 		[]byte(strings.Repeat("a", 42))[:0:0],
