@@ -614,6 +614,95 @@ func TestSwitchBacktrack(t *testing.T) {
 	re.Match(long[:1]) // triggers backtracker
 }
 
+func TestStartBytes(t *testing.T) {
+	// all returns the set of all bytes in [lo, hi].
+	all := func(lo, hi int) string {
+		var b []byte
+		for c := lo; c <= hi; c++ {
+			b = append(b, byte(c))
+		}
+		return string(b)
+	}
+	tests := []struct {
+		re   string
+		want string // bytes in the set, or "nil"
+	}{
+		{`[XYZ]abc`, "XYZ"},
+		{`(?i)abc`, "Aa"},
+		{`(?i)k`, "Kk\xe2"}, // U+212A KELVIN SIGN
+		{`(?i)s`, "Ss\xc5"}, // U+017F LATIN SMALL LETTER LONG S
+		{`(?i)é`, "\xc3"},   // U+00C9 and U+00E9
+		{`(a|bc)d`, "ab"},
+		{`a?b`, "ab"},
+		{`x*y`, "xy"},
+		{`\bfoo`, "f"},
+		{`(?m)^foo`, "f"},
+		{`[\x{80}\x{100}]`, "\xc2\xc4"},
+		{`[\x{80}-\x{7FF}]`, all(0xC2, 0xDF)},
+		{`[\x{800}-\x{FFFC}]`, all(0xE0, 0xEF)},
+		{`[\x{800}-\x{FFFF}]`, all(0x80, 0xFF)}, // includes utf8.RuneError
+		{`\x{FFFD}`, all(0x80, 0xFF)},
+		{`[\x{10000}-\x{10FFFF}]`, all(0xF0, 0xF4)},
+		{`[\x{D7FF}-\x{E000}]`, "\xed\xee"}, // surrogates excluded
+		{`[^a]b`, all(0, 'a'-1) + all('a'+1, 0xFF)},
+		{`[^\x{10FFFF}]`, "nil"}, // every byte
+		{`a*`, "nil"},            // can match empty
+		{`.abc`, "nil"},
+		{`(?s).abc`, "nil"},
+		{`abc`, "nil"},   // has literal prefix instead
+		{`\Aabc`, "nil"}, // anchored
+		{`^abc`, "nil"},  // anchored
+		{`[a-c]+$`, "abc"},
+	}
+	for _, tt := range tests {
+		re := MustCompile(tt.re)
+		got := "nil"
+		if re.startBytes != nil {
+			var b []byte
+			for c, ok := range re.startBytes {
+				if ok {
+					b = append(b, byte(c))
+				}
+			}
+			got = string(b)
+		}
+		if got != tt.want {
+			t.Errorf("startBytes(%q) = %q, want %q", tt.re, got, tt.want)
+		}
+	}
+
+	// Searches that skip ahead must still evaluate empty-width
+	// conditions at the new position.
+	finds := []struct {
+		re, text string
+		want     []int
+	}{
+		{`\b[XY]`, "aaX Y", []int{4, 5}},
+		{`\B[XY]`, "aaX Y", []int{2, 3}},
+		{`(?m)^[XY]`, "ab\nXc", []int{3, 4}},
+		{`(?m)^[XY]`, "abXc", nil},
+		{`[XY]$`, "abXcY", []int{4, 5}},
+		{`[XY]`, "ab\xffc\xe4\xb8X", []int{6, 7}},
+		{`[\x{FFFD}]`, "abc\x80X", []int{3, 4}},
+		{`[中文]`, "abc\xe4\xb8X中", []int{6, 9}},
+	}
+	for _, tt := range finds {
+		re := MustCompile(tt.re)
+		if re.startBytes == nil {
+			t.Errorf("startBytes(%q) = nil, want non-nil", tt.re)
+		}
+		for _, nfa := range []bool{false, true} {
+			re := re.Copy()
+			if nfa {
+				re.maxBitStateLen = 0 // force the NFA
+			}
+			if got := re.FindStringIndex(tt.text); !slices.Equal(got, tt.want) {
+				t.Errorf("%q.FindStringIndex(%q) [nfa=%v] = %v, want %v", tt.re, tt.text, nfa, got, tt.want)
+			}
+		}
+	}
+}
+
 func BenchmarkFind(b *testing.B) {
 	b.StopTimer()
 	re := MustCompile("a+b+")
@@ -761,6 +850,30 @@ func BenchmarkReplaceAll(b *testing.B) {
 	b.StopTimer()
 	re := MustCompile("[cjrw]")
 	b.StartTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.ReplaceAllString(x, "")
+	}
+}
+
+func BenchmarkReplaceAllNoMatch(b *testing.B) {
+	x := "abcdefghijklmnopqrstuvwxyz"
+	b.StopTimer()
+	re := MustCompile("[XYZ]")
+	b.StartTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		re.ReplaceAllString(x, "")
+	}
+}
+
+func BenchmarkReplaceAllLong(b *testing.B) {
+	x := strings.Repeat("abcdefghijklmnopqrstuvwxyz\n", 1000)
+	b.StopTimer()
+	re := MustCompile("[cjrw]")
+	b.StartTimer()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(x)))
 	for i := 0; i < b.N; i++ {
 		re.ReplaceAllString(x, "")
 	}

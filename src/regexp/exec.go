@@ -204,15 +204,24 @@ func (m *machine) match(i input, pos int) bool {
 				// Have match; finished exploring alternatives.
 				break
 			}
-			if len(m.re.prefix) > 0 && r1 != m.re.prefixRune && i.canCheckPrefix() {
-				// Match requires literal prefix; fast search for it.
+			if (len(m.re.prefix) > 0 && r1 != m.re.prefixRune ||
+				m.re.startBytes != nil && !m.re.startBytes.hasRune(r)) &&
+				i.canCheckPrefix() {
+				// Match requires literal prefix or one of a set of
+				// starting bytes; fast search for the next candidate.
 				advance := i.index(m.re, pos)
 				if advance < 0 {
 					break
 				}
-				pos += advance
-				r, width = i.step(pos)
-				r1, width1 = i.step(pos + width)
+				if advance > 0 {
+					pos += advance
+					r, width = i.step(pos)
+					r1, width1 = i.step(pos + width)
+					if m.re.startBytes != nil {
+						// The start instruction may be empty-width.
+						flag = i.context(pos)
+					}
+				}
 			}
 		}
 		if !m.matched {
@@ -292,7 +301,12 @@ func (m *machine) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *l
 			m.matched = true
 
 		case syntax.InstRune:
-			add = i.MatchRune(c)
+			if len(i.Rune) == 2 {
+				// Single range, such as [a-z]; avoid the call.
+				add = i.Rune[0] <= c && c <= i.Rune[1]
+			} else {
+				add = i.MatchRune(c)
+			}
 		case syntax.InstRune1:
 			add = c == i.Rune[0]
 		case syntax.InstRuneAny:
@@ -455,7 +469,12 @@ func (re *Regexp) doOnePass(ir io.RuneReader, ib []byte, is string, pos, ncap in
 			}
 			goto Return
 		case syntax.InstRune:
-			if !inst.MatchRune(r) {
+			if len(inst.Rune) == 2 {
+				// Single range, such as [a-z]; avoid the call.
+				if r < inst.Rune[0] || inst.Rune[1] < r {
+					goto Return
+				}
+			} else if !inst.MatchRune(r) {
 				goto Return
 			}
 		case syntax.InstRune1:
