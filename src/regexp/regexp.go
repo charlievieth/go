@@ -87,17 +87,16 @@ type Regexp struct {
 	prefixBytes    []byte         // prefix, as a []byte
 	prefixRune     rune           // first rune in prefix
 	prefixEnd      uint32         // pc for last rune in prefix
-	startBytes     *startSet      // bytes that can begin a match, when prefix is empty
+	startBytes     *startSet      // bytes that can begin a match, or nil if not useful; see startBytes
 	mpool          int            // pool for machines
 	matchcap       int            // size of recorded match lengths
+	minInputLen    int            // minimum length of the input in bytes
 	prefixComplete bool           // prefix is the entire regexp
 	cond           syntax.EmptyOp // empty-width conditions required at start of match
 
 	// This field can be modified by the Longest method,
 	// but it is otherwise read-only.
 	longest bool // whether regexp prefers leftmost-longest match
-
-	minInputLen int // minimum length of the input in bytes
 }
 
 // String returns the source text used to compile the regular expression.
@@ -204,10 +203,10 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		// IndexString to package bytes.
 		regexp.prefixBytes = []byte(regexp.prefix)
 		regexp.prefixRune, _ = utf8.DecodeRuneInString(regexp.prefix)
-	} else if regexp.onepass == nil && regexp.cond&syntax.EmptyBeginText == 0 {
-		// No literal prefix to search for, but the set of bytes that
-		// can begin a match may still be small enough to skip ahead
-		// in unanchored searches.
+	} else if regexp.cond&syntax.EmptyBeginText == 0 {
+		// No literal prefix to search for; compute the set of bytes
+		// that can begin a match so that unanchored searches can
+		// still skip ahead.
 		regexp.startBytes = startBytes(prog)
 	}
 
@@ -348,40 +347,33 @@ func startBytes(prog *syntax.Prog) *startSet {
 			stack = append(stack, inst.Out)
 		case syntax.InstRune, syntax.InstRune1:
 			if len(inst.Rune) == 1 {
+				// Single rune, possibly case-folded (as in Inst.MatchRunePos).
 				r0 := inst.Rune[0]
-				addStartBytes(set, r0, r0)
+				set.addRange(r0, r0)
 				if syntax.Flags(inst.Arg)&syntax.FoldCase != 0 {
 					for r1 := unicode.SimpleFold(r0); r1 != r0; r1 = unicode.SimpleFold(r1) {
-						addStartBytes(set, r1, r1)
+						set.addRange(r1, r1)
 					}
 				}
-				break
-			}
-			for j := 0; j+1 < len(inst.Rune); j += 2 {
-				addStartBytes(set, inst.Rune[j], inst.Rune[j+1])
+			} else {
+				for j := 0; j < len(inst.Rune); j += 2 {
+					set.addRange(inst.Rune[j], inst.Rune[j+1])
+				}
 			}
 		}
 	}
-	n := 0
-	for _, ok := range set {
-		if ok {
-			n++
-		}
-	}
-	if n == len(set) {
+	if !slices.Contains(set[:], false) {
+		// Every byte can begin a match; skipping ahead cannot help.
 		return nil
 	}
 	return set
 }
 
-// addStartBytes adds to set the bytes that can begin the
+// addRange adds to set the bytes that can begin the
 // UTF-8 encoding of any rune in the range [lo, hi].
-func addStartBytes(set *startSet, lo, hi rune) {
-	if lo < utf8.RuneSelf {
-		for r := lo; r <= hi && r < utf8.RuneSelf; r++ {
-			set[r] = true
-		}
-		lo = utf8.RuneSelf
+func (set *startSet) addRange(lo, hi rune) {
+	for ; lo <= hi && lo < utf8.RuneSelf; lo++ {
+		set[lo] = true
 	}
 	if lo > hi {
 		return
@@ -394,54 +386,43 @@ func addStartBytes(set *startSet, lo, hi rune) {
 		}
 		return
 	}
-	// Surrogate halves never appear in decoded input, and
-	// utf8.EncodeRune would encode them as RuneError.
-	if lo >= surrogateMin && lo <= surrogateMax {
-		lo = surrogateMax + 1
-	}
-	if hi >= surrogateMin && hi <= surrogateMax {
-		hi = surrogateMin - 1
-	}
-	if lo > hi {
-		return
-	}
-	// The leading byte of a UTF-8 encoding is monotonic in the rune value,
-	// so the leading bytes for [lo, hi] are the contiguous range between
-	// those of lo and hi.
-	var buf [utf8.UTFMax]byte
-	utf8.EncodeRune(buf[:], lo)
-	b0 := buf[0]
-	utf8.EncodeRune(buf[:], hi)
-	b1 := buf[0]
-	for b := int(b0); b <= int(b1); b++ {
+	// The leading byte is monotonic in the rune value, so the
+	// leading bytes for [lo, hi] form a contiguous range.
+	for b := leadByte(lo); b <= leadByte(hi); b++ {
 		set[b] = true
 	}
 }
 
-const (
-	surrogateMin = 0xD800
-	surrogateMax = 0xDFFF
-)
+// leadByte returns the first byte of the UTF-8 encoding of the
+// non-ASCII rune r. Surrogate halves, which have no encoding,
+// are treated like any other rune, keeping the result monotonic in r.
+func leadByte(r rune) byte {
+	switch {
+	case r < 0x800:
+		return 0xC0 | byte(r>>6)
+	case r < 0x10000:
+		return 0xE0 | byte(r>>12)
+	default:
+		return 0xF0 | byte(r>>18)
+	}
+}
 
-// hasRune reports whether a match can begin with the rune r
-// as decoded from the input, judging by the first byte of its encoding.
+// hasRune reports whether a match can begin with the rune r as decoded
+// from the input, judging by the first byte of its encoding.
 // It reports true for endOfText so that callers do not try to skip ahead.
+//
+// Callers use hasRune only to decide whether to search ahead with index,
+// which tests the actual input bytes, so an inaccurate answer (possible
+// for utf8.RuneError decoded from an invalid byte) costs time, not
+// correctness.
 func (set *startSet) hasRune(r rune) bool {
 	switch {
 	case r < 0:
 		return true
 	case r < utf8.RuneSelf:
 		return set[r]
-	case r < 0x800:
-		return set[0xC0|r>>6]
-	case r < 0x10000:
-		// This includes utf8.RuneError, whether decoded from
-		// a valid encoding or from an invalid byte: in the
-		// latter case the answer may be true when the input
-		// byte is not in the set, which is conservative.
-		return set[0xE0|r>>12]
 	default:
-		return set[0xF0|r>>18]
+		return set[leadByte(r)]
 	}
 }
 
@@ -525,7 +506,7 @@ type input interface {
 	step(pos int) (r rune, width int) // advance one rune
 	canCheckPrefix() bool             // can we look ahead without losing info?
 	hasPrefix(re *Regexp) bool
-	index(re *Regexp, pos int) int
+	index(re *Regexp, pos int) int // offset from pos of the next possible match start, or -1
 	context(pos int) lazyFlag
 }
 
@@ -734,26 +715,18 @@ func (re *Regexp) ReplaceAllString(src, repl string) string {
 	if strings.Contains(repl, "$") {
 		n = 2 * (re.numSubexp + 1)
 	}
-	b, matched := re.replaceAll(nil, src, n, func(dst []byte, match []int) []byte {
+	return re.replaceAllString(src, n, func(dst []byte, match []int) []byte {
 		return re.expand(dst, repl, nil, src, match)
 	})
-	if !matched {
-		return src
-	}
-	return string(b)
 }
 
 // ReplaceAllLiteralString returns a copy of src, replacing matches of the [Regexp]
 // with the replacement string repl. The replacement repl is substituted directly,
 // without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllLiteralString(src, repl string) string {
-	b, matched := re.replaceAll(nil, src, 2, func(dst []byte, match []int) []byte {
+	return re.replaceAllString(src, 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl...)
 	})
-	if !matched {
-		return src
-	}
-	return string(b)
 }
 
 // ReplaceAllStringFunc returns a copy of src in which all matches of the
@@ -761,13 +734,9 @@ func (re *Regexp) ReplaceAllLiteralString(src, repl string) string {
 // to the matched substring. The replacement returned by repl is substituted
 // directly, without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllStringFunc(src string, repl func(string) string) string {
-	b, matched := re.replaceAll(nil, src, 2, func(dst []byte, match []int) []byte {
+	return re.replaceAllString(src, 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl(src[match[0]:match[1]])...)
 	})
-	if !matched {
-		return src
-	}
-	return string(b)
 }
 
 // replaceAll returns a copy of the input text (bsrc if non-nil, src otherwise)
@@ -789,6 +758,9 @@ func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst 
 	}
 
 	matched := false
+	// dstCap is passed to repl, an arbitrary function, so it escapes
+	// to the heap; give it room for every index so that find need
+	// not grow it on each match.
 	dstCap := make([]int, 0, nmatch)
 	for searchPos <= endPos {
 		a := re.find(nil, bsrc, src, searchPos, nmatch, dstCap[:0])
@@ -797,11 +769,9 @@ func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst 
 		}
 		if !matched {
 			matched = true
-			if endPos > 0 {
-				// Allocate the result once, assuming the
-				// replacements do not grow the text much.
-				buf = make([]byte, 0, endPos)
-			}
+			// Allocate the result once, assuming the
+			// replacements do not grow the text much.
+			buf = slices.Grow(buf, endPos)
 		}
 
 		// Copy the unmatched characters before this match.
@@ -852,6 +822,26 @@ func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst 
 	return buf, true
 }
 
+// replaceAllString is replaceAll for a string input and result.
+// It returns src itself when there are no matches.
+func (re *Regexp) replaceAllString(src string, nmatch int, repl func(dst []byte, m []int) []byte) string {
+	b, matched := re.replaceAll(nil, src, nmatch, repl)
+	if !matched {
+		return src
+	}
+	return string(b)
+}
+
+// replaceAllBytes is replaceAll for a []byte input and result.
+// It returns a copy of src when there are no matches.
+func (re *Regexp) replaceAllBytes(src []byte, nmatch int, repl func(dst []byte, m []int) []byte) []byte {
+	b, matched := re.replaceAll(src, "", nmatch, repl)
+	if !matched {
+		return append([]byte(nil), src...)
+	}
+	return b
+}
+
 // ReplaceAll returns a copy of src, replacing matches of the [Regexp]
 // with the replacement text repl.
 // Inside repl, $ signs are interpreted as in [Regexp.Expand].
@@ -861,29 +851,21 @@ func (re *Regexp) ReplaceAll(src, repl []byte) []byte {
 		n = 2 * (re.numSubexp + 1)
 	}
 	srepl := ""
-	b, matched := re.replaceAll(src, "", n, func(dst []byte, match []int) []byte {
+	return re.replaceAllBytes(src, n, func(dst []byte, match []int) []byte {
 		if len(srepl) != len(repl) {
 			srepl = string(repl)
 		}
 		return re.expand(dst, srepl, src, "", match)
 	})
-	if !matched {
-		return append([]byte(nil), src...)
-	}
-	return b
 }
 
 // ReplaceAllLiteral returns a copy of src, replacing matches of the [Regexp]
 // with the replacement bytes repl. The replacement repl is substituted directly,
 // without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllLiteral(src, repl []byte) []byte {
-	b, matched := re.replaceAll(src, "", 2, func(dst []byte, match []int) []byte {
+	return re.replaceAllBytes(src, 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl...)
 	})
-	if !matched {
-		return append([]byte(nil), src...)
-	}
-	return b
 }
 
 // ReplaceAllFunc returns a copy of src in which all matches of the
@@ -891,13 +873,9 @@ func (re *Regexp) ReplaceAllLiteral(src, repl []byte) []byte {
 // to the matched byte slice. The replacement returned by repl is substituted
 // directly, without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
-	b, matched := re.replaceAll(src, "", 2, func(dst []byte, match []int) []byte {
+	return re.replaceAllBytes(src, 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl(src[match[0]:match[1]])...)
 	})
-	if !matched {
-		return append([]byte(nil), src...)
-	}
-	return b
 }
 
 // Bitmap used by func special to check whether a character needs to be escaped.

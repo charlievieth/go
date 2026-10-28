@@ -345,7 +345,10 @@ func (re *Regexp) backtrack(ib []byte, is string, pos int, ncap int, dstCap []in
 				pos += advance
 			} else if re.startBytes != nil && pos < end {
 				// Match requires one of a set of starting bytes;
-				// fast search for the next candidate.
+				// fast search for the next candidate unless the byte
+				// at pos is one already. Peek at the byte directly:
+				// decoding it through i.step for every position
+				// costs a measurable extra interface call.
 				var c byte
 				if ib != nil {
 					c = ib[pos]
