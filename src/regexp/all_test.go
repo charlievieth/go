@@ -643,7 +643,7 @@ func TestStartBytes(t *testing.T) {
 		{`[\x{800}-\x{FFFF}]`, all(0x80, 0xFF)}, // includes utf8.RuneError
 		{`\x{FFFD}`, all(0x80, 0xFF)},
 		{`[\x{10000}-\x{10FFFF}]`, all(0xF0, 0xF4)},
-		{`[\x{D7FF}-\x{E000}]`, "\xed\xee"}, // surrogates excluded
+		{`[\x{D7FF}-\x{E000}]`, "\xed\xee"}, // spans the surrogate halves
 		{`[^a]b`, all(0, 'a'-1) + all('a'+1, 0xFF)},
 		{`[^\x{10FFFF}]`, "nil"}, // every byte
 		{`a*`, "nil"},            // can match empty
@@ -691,13 +691,16 @@ func TestStartBytes(t *testing.T) {
 		if re.startBytes == nil {
 			t.Errorf("startBytes(%q) = nil, want non-nil", tt.re)
 		}
-		for _, nfa := range []bool{false, true} {
-			re := re.Copy()
-			if nfa {
-				re.maxBitStateLen = 0 // force the NFA
+		for _, engine := range []string{"backtrack", "nfa"} {
+			rc := re.Copy()
+			if engine == "nfa" {
+				rc.maxBitStateLen = 0 // force the NFA
 			}
-			if got := re.FindStringIndex(tt.text); !slices.Equal(got, tt.want) {
-				t.Errorf("%q.FindStringIndex(%q) [nfa=%v] = %v, want %v", tt.re, tt.text, nfa, got, tt.want)
+			if got := rc.FindStringIndex(tt.text); !slices.Equal(got, tt.want) {
+				t.Errorf("%s: %q.FindStringIndex(%q) = %v, want %v", engine, tt.re, tt.text, got, tt.want)
+			}
+			if got := rc.FindIndex([]byte(tt.text)); !slices.Equal(got, tt.want) {
+				t.Errorf("%s: %q.FindIndex(%q) = %v, want %v", engine, tt.re, tt.text, got, tt.want)
 			}
 		}
 	}

@@ -204,11 +204,16 @@ func (m *machine) match(i input, pos int) bool {
 				// Have match; finished exploring alternatives.
 				break
 			}
-			if (len(m.re.prefix) > 0 && r1 != m.re.prefixRune ||
-				m.re.startBytes != nil && !m.re.startBytes.hasRune(r)) &&
-				i.canCheckPrefix() {
-				// Match requires literal prefix or one of a set of
-				// starting bytes; fast search for the next candidate.
+			// Match requires a literal prefix or one of a set of
+			// starting bytes; fast search for the next candidate,
+			// unless this or the next position already looks like one.
+			skip := false
+			if len(m.re.prefix) > 0 {
+				skip = r1 != m.re.prefixRune
+			} else if m.re.startBytes != nil {
+				skip = !m.re.startBytes.hasRune(r)
+			}
+			if skip && i.canCheckPrefix() {
 				advance := i.index(m.re, pos)
 				if advance < 0 {
 					break
@@ -218,7 +223,9 @@ func (m *machine) match(i input, pos int) bool {
 					r, width = i.step(pos)
 					r1, width1 = i.step(pos + width)
 					if m.re.startBytes != nil {
-						// The start instruction may be empty-width.
+						// Unlike a literal prefix, a start set is
+						// computed through empty-width instructions,
+						// so the flags at the new position matter.
 						flag = i.context(pos)
 					}
 				}

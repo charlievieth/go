@@ -74,7 +74,7 @@ func onePassPrefix(p *syntax.Prog) (prefix string, complete bool, pc uint32) {
 // is InstAltMatch the path to the InstMatch is in i.Out, the normal node in i.Next.
 func onePassNext(i *onePassInst, r rune) uint32 {
 	if len(i.Rune) == 2 {
-		// Single range; avoid the call.
+		// Single range, such as [a-z]; avoid the call.
 		if i.Rune[0] <= r && r <= i.Rune[1] {
 			return i.Next[0]
 		}
