@@ -892,30 +892,6 @@ func BenchmarkReplaceAll(b *testing.B) {
 	b.StopTimer()
 	re := MustCompile("[cjrw]")
 	b.StartTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		re.ReplaceAllString(x, "")
-	}
-}
-
-func BenchmarkReplaceAllNoMatch(b *testing.B) {
-	x := "abcdefghijklmnopqrstuvwxyz"
-	b.StopTimer()
-	re := MustCompile("[XYZ]")
-	b.StartTimer()
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		re.ReplaceAllString(x, "")
-	}
-}
-
-func BenchmarkReplaceAllLong(b *testing.B) {
-	x := strings.Repeat("abcdefghijklmnopqrstuvwxyz\n", 1000)
-	b.StopTimer()
-	re := MustCompile("[cjrw]")
-	b.StartTimer()
-	b.ReportAllocs()
-	b.SetBytes(int64(len(x)))
 	for i := 0; i < b.N; i++ {
 		re.ReplaceAllString(x, "")
 	}

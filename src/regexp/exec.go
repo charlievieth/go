@@ -308,12 +308,7 @@ func (m *machine) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *l
 			m.matched = true
 
 		case syntax.InstRune:
-			if len(i.Rune) == 2 {
-				// Single range, such as [a-z]; avoid the call.
-				add = i.Rune[0] <= c && c <= i.Rune[1]
-			} else {
-				add = i.MatchRune(c)
-			}
+			add = i.MatchRune(c)
 		case syntax.InstRune1:
 			add = c == i.Rune[0]
 		case syntax.InstRuneAny:
@@ -476,12 +471,7 @@ func (re *Regexp) doOnePass(ir io.RuneReader, ib []byte, is string, pos, ncap in
 			}
 			goto Return
 		case syntax.InstRune:
-			if len(inst.Rune) == 2 {
-				// Single range, such as [a-z]; avoid the call.
-				if r < inst.Rune[0] || inst.Rune[1] < r {
-					goto Return
-				}
-			} else if !inst.MatchRune(r) {
+			if !inst.MatchRune(r) {
 				goto Return
 			}
 		case syntax.InstRune1:

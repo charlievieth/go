@@ -517,9 +517,6 @@ type inputString struct {
 
 func (i *inputString) step(pos int) (rune, int) {
 	if pos < len(i.str) {
-		if c := i.str[pos]; c < utf8.RuneSelf {
-			return rune(c), 1
-		}
 		return utf8.DecodeRuneInString(i.str[pos:])
 	}
 	return endOfText, 0
@@ -544,19 +541,11 @@ func (i *inputString) context(pos int) lazyFlag {
 	r1, r2 := endOfText, endOfText
 	// 0 < pos && pos <= len(i.str)
 	if uint(pos-1) < uint(len(i.str)) {
-		if c := i.str[pos-1]; c < utf8.RuneSelf {
-			r1 = rune(c)
-		} else {
-			r1, _ = utf8.DecodeLastRuneInString(i.str[:pos])
-		}
+		r1, _ = utf8.DecodeLastRuneInString(i.str[:pos])
 	}
 	// 0 <= pos && pos < len(i.str)
 	if uint(pos) < uint(len(i.str)) {
-		if c := i.str[pos]; c < utf8.RuneSelf {
-			r2 = rune(c)
-		} else {
-			r2, _ = utf8.DecodeRuneInString(i.str[pos:])
-		}
+		r2, _ = utf8.DecodeRuneInString(i.str[pos:])
 	}
 	return newLazyFlag(r1, r2)
 }
@@ -568,9 +557,6 @@ type inputBytes struct {
 
 func (i *inputBytes) step(pos int) (rune, int) {
 	if pos < len(i.str) {
-		if c := i.str[pos]; c < utf8.RuneSelf {
-			return rune(c), 1
-		}
 		return utf8.DecodeRune(i.str[pos:])
 	}
 	return endOfText, 0
@@ -595,19 +581,11 @@ func (i *inputBytes) context(pos int) lazyFlag {
 	r1, r2 := endOfText, endOfText
 	// 0 < pos && pos <= len(i.str)
 	if uint(pos-1) < uint(len(i.str)) {
-		if c := i.str[pos-1]; c < utf8.RuneSelf {
-			r1 = rune(c)
-		} else {
-			r1, _ = utf8.DecodeLastRune(i.str[:pos])
-		}
+		r1, _ = utf8.DecodeLastRune(i.str[:pos])
 	}
 	// 0 <= pos && pos < len(i.str)
 	if uint(pos) < uint(len(i.str)) {
-		if c := i.str[pos]; c < utf8.RuneSelf {
-			r2 = rune(c)
-		} else {
-			r2, _ = utf8.DecodeRune(i.str[pos:])
-		}
+		r2, _ = utf8.DecodeRune(i.str[pos:])
 	}
 	return newLazyFlag(r1, r2)
 }
@@ -715,18 +693,19 @@ func (re *Regexp) ReplaceAllString(src, repl string) string {
 	if strings.Contains(repl, "$") {
 		n = 2 * (re.numSubexp + 1)
 	}
-	return re.replaceAllString(src, n, func(dst []byte, match []int) []byte {
+	b := re.replaceAll(nil, src, n, func(dst []byte, match []int) []byte {
 		return re.expand(dst, repl, nil, src, match)
 	})
+	return string(b)
 }
 
 // ReplaceAllLiteralString returns a copy of src, replacing matches of the [Regexp]
 // with the replacement string repl. The replacement repl is substituted directly,
 // without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllLiteralString(src, repl string) string {
-	return re.replaceAllString(src, 2, func(dst []byte, match []int) []byte {
+	return string(re.replaceAll(nil, src, 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl...)
-	})
+	}))
 }
 
 // ReplaceAllStringFunc returns a copy of src in which all matches of the
@@ -734,16 +713,13 @@ func (re *Regexp) ReplaceAllLiteralString(src, repl string) string {
 // to the matched substring. The replacement returned by repl is substituted
 // directly, without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllStringFunc(src string, repl func(string) string) string {
-	return re.replaceAllString(src, 2, func(dst []byte, match []int) []byte {
+	b := re.replaceAll(nil, src, 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl(src[match[0]:match[1]])...)
 	})
+	return string(b)
 }
 
-// replaceAll returns a copy of the input text (bsrc if non-nil, src otherwise)
-// in which each match has been replaced by the text appended by repl.
-// The boolean result reports whether there were any matches;
-// if not, the returned slice is nil.
-func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst []byte, m []int) []byte) ([]byte, bool) {
+func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst []byte, m []int) []byte) []byte {
 	lastMatchEnd := 0 // end position of the most recent match
 	searchPos := 0    // position where we next look for a match
 	var buf []byte
@@ -757,21 +733,11 @@ func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst 
 		nmatch = re.prog.NumCap
 	}
 
-	matched := false
-	// dstCap is passed to repl, an arbitrary function, so it escapes
-	// to the heap; give it room for every index so that find need
-	// not grow it on each match.
-	dstCap := make([]int, 0, nmatch)
+	var dstCap [2]int
 	for searchPos <= endPos {
 		a := re.find(nil, bsrc, src, searchPos, nmatch, dstCap[:0])
 		if len(a) == 0 {
 			break // no more matches
-		}
-		if !matched {
-			matched = true
-			// Allocate the result once, assuming the
-			// replacements do not grow the text much.
-			buf = slices.Grow(buf, endPos)
 		}
 
 		// Copy the unmatched characters before this match.
@@ -808,10 +774,6 @@ func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst 
 		}
 	}
 
-	if !matched {
-		return nil, false
-	}
-
 	// Copy the unmatched characters after the last match.
 	if bsrc != nil {
 		buf = append(buf, bsrc[lastMatchEnd:]...)
@@ -819,27 +781,7 @@ func (re *Regexp) replaceAll(bsrc []byte, src string, nmatch int, repl func(dst 
 		buf = append(buf, src[lastMatchEnd:]...)
 	}
 
-	return buf, true
-}
-
-// replaceAllString is replaceAll for a string input and result.
-// It returns src itself when there are no matches.
-func (re *Regexp) replaceAllString(src string, nmatch int, repl func(dst []byte, m []int) []byte) string {
-	b, matched := re.replaceAll(nil, src, nmatch, repl)
-	if !matched {
-		return src
-	}
-	return string(b)
-}
-
-// replaceAllBytes is replaceAll for a []byte input and result.
-// It returns a copy of src when there are no matches.
-func (re *Regexp) replaceAllBytes(src []byte, nmatch int, repl func(dst []byte, m []int) []byte) []byte {
-	b, matched := re.replaceAll(src, "", nmatch, repl)
-	if !matched {
-		return append([]byte(nil), src...)
-	}
-	return b
+	return buf
 }
 
 // ReplaceAll returns a copy of src, replacing matches of the [Regexp]
@@ -851,19 +793,20 @@ func (re *Regexp) ReplaceAll(src, repl []byte) []byte {
 		n = 2 * (re.numSubexp + 1)
 	}
 	srepl := ""
-	return re.replaceAllBytes(src, n, func(dst []byte, match []int) []byte {
+	b := re.replaceAll(src, "", n, func(dst []byte, match []int) []byte {
 		if len(srepl) != len(repl) {
 			srepl = string(repl)
 		}
 		return re.expand(dst, srepl, src, "", match)
 	})
+	return b
 }
 
 // ReplaceAllLiteral returns a copy of src, replacing matches of the [Regexp]
 // with the replacement bytes repl. The replacement repl is substituted directly,
 // without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllLiteral(src, repl []byte) []byte {
-	return re.replaceAllBytes(src, 2, func(dst []byte, match []int) []byte {
+	return re.replaceAll(src, "", 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl...)
 	})
 }
@@ -873,7 +816,7 @@ func (re *Regexp) ReplaceAllLiteral(src, repl []byte) []byte {
 // to the matched byte slice. The replacement returned by repl is substituted
 // directly, without using [Regexp.Expand].
 func (re *Regexp) ReplaceAllFunc(src []byte, repl func([]byte) []byte) []byte {
-	return re.replaceAllBytes(src, 2, func(dst []byte, match []int) []byte {
+	return re.replaceAll(src, "", 2, func(dst []byte, match []int) []byte {
 		return append(dst, repl(src[match[0]:match[1]])...)
 	})
 }
