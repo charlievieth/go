@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp/syntax"
 	"sync"
+	"unicode/utf8"
 )
 
 // A queue is a 'sparse array' holding pending threads of execution.
@@ -211,7 +212,10 @@ func (m *machine) match(i input, pos int) bool {
 			if len(m.re.prefix) > 0 {
 				skip = r1 != m.re.prefixRune
 			} else if m.re.startBytes != nil {
-				skip = !m.re.startBytes.hasRune(r)
+				// A RuneError of width 1 is an invalid byte whose
+				// value hasRune cannot see, so let index, which
+				// tests the actual byte, decide whether to skip.
+				skip = !m.re.startBytes.hasRune(r) || r == utf8.RuneError && width == 1
 			}
 			if skip && i.canCheckPrefix() {
 				advance := i.index(m.re, pos)
