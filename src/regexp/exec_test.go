@@ -6,6 +6,7 @@ package regexp
 
 import (
 	"bufio"
+	"bytes"
 	"compress/bzip2"
 	"fmt"
 	"internal/testenv"
@@ -707,6 +708,105 @@ var benchSizes = []struct {
 	{"32K", 32 << 10},
 	{"1M", 1 << 20},
 	{"32M", 32 << 20},
+}
+
+// repeatText returns a function that builds n bytes of text
+// by repeating s.
+func repeatText(s string) func(n int) []byte {
+	return func(n int) []byte {
+		return bytes.Repeat([]byte(s), n/len(s)+1)[:n]
+	}
+}
+
+// benchStartBytes pairs regexps that have a start-byte set but no
+// literal prefix with inputs chosen to be unfavorable to skipping:
+// candidate positions are so dense that the skip either never
+// triggers or advances by a single byte, so checking the set is
+// close to pure overhead. None of the inputs contain a match, so
+// every search runs over the whole text. Small sizes exercise the
+// backtracker and large sizes the NFA.
+var benchStartBytes = []struct {
+	name, re string
+	text     func(n int) []byte
+}{
+	// Every byte is a start byte and each attempt fails after one
+	// rune, so the set is consulted at every position and never skips.
+	{"Dense", `[ab]c`, repeatText("ab")},
+	// Every other byte is a start byte, so each skip advances by one.
+	{"Alternating", `[XY]b`, repeatText("aX")},
+	// As Alternating, with an empty-width condition that has to be
+	// re-evaluated at every position skipped to.
+	{"AlternatingBoundary", `\b[XY]b`, repeatText("aX")},
+	// Each candidate survives several steps before failing, so the
+	// matching work should dominate the skipping.
+	{"NearMiss", `[XY]abcdefghij`, repeatText("Xabcdefghiz")},
+	// Invalid UTF-8: every byte decodes to RuneError, whose lead
+	// byte is in the set, so the NFA, which tests the decoded rune,
+	// can never skip. The backtracker tests the raw byte instead
+	// and skips the whole input in one scan.
+	{"InvalidUTF8", `[\x{F000}-\x{FFF0}]`, repeatText("\x80")},
+	// Valid multi-byte text whose runes share a lead byte with the
+	// class but are not in it; the set cannot tell them apart.
+	{"LeadByteCollision", `[中文]x`, repeatText("日")},
+	// For contrast, the favorable case: candidates are rare.
+	{"Sparse", `[XY]b`, repeatText(strings.Repeat("a", 63) + "X")},
+}
+
+func BenchmarkStartBytes(b *testing.B) {
+	isRaceBuilder := strings.HasSuffix(testenv.Builder(), "-race")
+
+	for _, data := range benchStartBytes {
+		r := MustCompile(data.re)
+		if r.startBytes == nil {
+			b.Fatalf("%s: %q has no start-byte set", data.name, data.re)
+		}
+		for _, size := range benchSizes {
+			if (isRaceBuilder || testing.Short()) && size.n > 1<<10 {
+				continue
+			}
+			t := data.text(size.n)
+			b.Run(data.name+"/"+size.name, func(b *testing.B) {
+				b.SetBytes(int64(size.n))
+				for i := 0; i < b.N; i++ {
+					if r.Match(t) {
+						b.Fatal("match!")
+					}
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkStartBytesFindAll measures repeated searches that each
+// skip a single byte and then match immediately, so the per-search
+// cost of entering the skip is paid once per match.
+func BenchmarkStartBytesFindAll(b *testing.B) {
+	r := MustCompile(`[XY]`)
+	if r.startBytes == nil {
+		b.Fatalf("%q has no start-byte set", r)
+	}
+	for _, size := range benchSizes {
+		if size.n != 1<<10 && size.n != 1<<20 { // backtracker and NFA
+			continue
+		}
+		if testing.Short() && size.n > 1<<10 {
+			continue
+		}
+		t := repeatText("aX")(size.n)
+		b.Run(size.name, func(b *testing.B) {
+			b.SetBytes(int64(size.n))
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				n := 0
+				for range r.AllIndex(t) {
+					n++
+				}
+				if n != size.n/2 {
+					b.Fatalf("got %d matches, want %d", n, size.n/2)
+				}
+			}
+		})
+	}
 }
 
 func TestLongest(t *testing.T) {

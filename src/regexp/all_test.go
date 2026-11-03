@@ -1056,6 +1056,7 @@ var compileBenchData = []struct{ name, re string }{
 	{"Onepass", `^a.[l-nA-Cg-j]?e$`},
 	{"Medium", `^((a|b|[d-z0-9])*(日){4,5}.)+$`},
 	{"Hard", strings.Repeat(`((abc)*|`, 50) + strings.Repeat(`)`, 50)},
+	{"LargeClass", `(?i)[\p{L}\p{N}]+x`}, // many ranges for startBytes to add
 }
 
 func BenchmarkCompile(b *testing.B) {
