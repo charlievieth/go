@@ -204,9 +204,7 @@ func compile(expr string, mode syntax.Flags, longest bool) (*Regexp, error) {
 		regexp.prefixBytes = []byte(regexp.prefix)
 		regexp.prefixRune, _ = utf8.DecodeRuneInString(regexp.prefix)
 	} else if regexp.cond&syntax.EmptyBeginText == 0 {
-		// No literal prefix to search for; compute the set of bytes
-		// that can begin a match so that unanchored searches can
-		// still skip ahead.
+		// Only unanchored searches can skip ahead.
 		regexp.startBytes = startBytes(prog)
 	}
 
@@ -315,13 +313,10 @@ func minInputLen(re *syntax.Regexp) int {
 type startSet [256]bool
 
 // startBytes returns the set of bytes that can begin a match of prog,
-// or nil if the set is not useful for skipping ahead: either prog can
-// match the empty string, so that a match can begin at any position,
-// or every byte can begin a match.
+// or nil if the set would not help a search skip ahead.
 //
-// The set is conservative: it follows empty-width instructions without
-// checking their conditions, and for a multi-byte UTF-8 sequence it
-// records only the leading byte.
+// The set is conservative and may include bytes that cannot begin a match,
+// but it never omits one that can.
 func startBytes(prog *syntax.Prog) *startSet {
 	set := new(startSet)
 	visited := make([]bool, len(prog.Inst))
@@ -356,8 +351,8 @@ func startBytes(prog *syntax.Prog) *startSet {
 					}
 				}
 			} else {
-				for j := 0; j < len(inst.Rune); j += 2 {
-					set.addRange(inst.Rune[j], inst.Rune[j+1])
+				for i := 0; i < len(inst.Rune); i += 2 {
+					set.addRange(inst.Rune[i], inst.Rune[i+1])
 				}
 			}
 		}
@@ -407,14 +402,7 @@ func leadByte(r rune) byte {
 	}
 }
 
-// hasRune reports whether a match can begin with the rune r as decoded
-// from the input, judging by the first byte of its encoding.
-// It reports true for endOfText so that callers do not try to skip ahead.
-//
-// Callers use hasRune only to decide whether to search ahead with index,
-// which tests the actual input bytes, so an inaccurate answer (possible
-// for utf8.RuneError decoded from an invalid byte) costs time, not
-// correctness.
+// hasRune reports whether a match can begin with rune r.
 func (set *startSet) hasRune(r rune) bool {
 	switch {
 	case r < 0:
@@ -429,9 +417,9 @@ func (set *startSet) hasRune(r rune) bool {
 // indexStartBytes returns the index of the first byte in s
 // that is in set, or -1 if there is none.
 func indexStartBytes[T string | []byte](s T, set *startSet) int {
-	for j := 0; j < len(s); j++ {
-		if set[s[j]] {
-			return j
+	for i := 0; i < len(s); i++ {
+		if set[s[i]] {
+			return i
 		}
 	}
 	return -1
@@ -506,7 +494,7 @@ type input interface {
 	step(pos int) (r rune, width int) // advance one rune
 	canCheckPrefix() bool             // can we look ahead without losing info?
 	hasPrefix(re *Regexp) bool
-	index(re *Regexp, pos int) int // offset from pos of the next possible match start, or -1
+	index(re *Regexp, pos int) int
 	context(pos int) lazyFlag
 }
 
